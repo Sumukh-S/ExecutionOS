@@ -1,0 +1,50 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Testing & Coverage
+/coverage
+
+# Next.js Build Output & Cache
+/.next/
+/out/
+/build
+dist
+
+# Production
+build
+
+# Misc
+.DS_Store
+*.pem
+Thumbs.db
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Local Environment Files (CRITICAL: Never push secrets or local credentials)
+.env*.local
+.env
+.env.development
+.env.test
+.env.production
+
+# TypeScript Cache
+*.tsbuildinfo
+next-env.d.ts
+
+# Vercel & IDE Artifacts
+.vercel
+.idea
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.sublime-workspace
+.claude/
