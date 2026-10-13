@@ -120,13 +120,13 @@ export function TaskCard({
             </Button>
           )}
           {onStart && status !== "in_progress" && status !== "done" && (
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={onStart} title="Start task" aria-label="Start task">
+            <Button size="sm" variant="outline" className="gap-1.5 hidden" onClick={onStart} title="Start task" aria-label="Start task">
               <Play className="h-4 w-4" />
               <span className="hidden sm:inline">Start</span>
             </Button>
           )}
           {onPause && status === "in_progress" && (
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={onPause} title="Pause task" aria-label="Pause task">
+            <Button size="sm" variant="outline" className="gap-1.5 hidden" onClick={onPause} title="Pause task" aria-label="Pause task">
               <Pause className="h-4 w-4" />
               <span className="hidden sm:inline">Pause</span>
             </Button>

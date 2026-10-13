@@ -74,9 +74,33 @@
     animation: icon-float 5s ease-in-out infinite;
   }
 
-  @keyframes water-drift {
-    from { background-position: 0% 0%; }
-    to { background-position: 100% 100%; }
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.8) hue-rotate(180deg);
+    cursor: pointer;
+    opacity: 0.85;
+    padding: 4px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+  }
+
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+    background: hsl(var(--primary) / 0.2);
+    transform: scale(1.1);
+  }
+
+  input[type="datetime-local"] {
+    border: 1px solid hsl(var(--border));
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  input[type="datetime-local"]:hover {
+    border-color: hsl(var(--primary) / 0.6);
+  }
+
+  input[type="datetime-local"]:focus {
+    border-color: hsl(var(--primary));
+    box-shadow: 0 0 0 2px hsl(var(--primary) / 0.25);
   }
 
   @keyframes icon-float {

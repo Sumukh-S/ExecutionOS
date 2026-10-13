@@ -1,6 +1,9 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { repository } from "@/lib/db/repository";
+import { syncEngine } from "@/lib/sync/engine";
+import { useAuth } from "@/contexts/auth";
 
 export type Priority = "low" | "medium" | "high" | "urgent";
 export type TaskStatus = "todo" | "in_progress" | "done";
@@ -108,6 +111,7 @@ type ExecutionDataContext = {
   addFocusSession: (session: Omit<FocusSession, "id"> & { id?: string }) => void;
   addGoal: (goal: Omit<GoalRecord, "id" | "progress"> & { progress?: number }) => void;
   updateGoal: (id: string, patch: Partial<GoalRecord>) => void;
+  deleteGoal: (id: string) => void;
   updateGoalProgress: (id: string, value: number, note?: string) => void;
   restoreData: (data: Partial<Pick<ExecutionDataContext, "tasks" | "goals" | "sessions" | "quickTasks">>, mode: "merge" | "replace") => void;
   addQuickTask: (title: string) => void;
@@ -136,32 +140,82 @@ function normalizeTask(task: TaskRecord): TaskRecord {
 }
 
 export function ExecutionDataProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [tasks, setTasks] = useState<TaskRecord[]>(SEED_TASKS);
   const [goals, setGoals] = useState<GoalRecord[]>(SEED_GOALS);
   const [sessions, setSessions] = useState<FocusSession[]>([]);
   const [quickTasks, setQuickTasks] = useState<QuickTask[]>(SEED_QUICK_TASKS);
   const [hydrated, setHydrated] = useState(false);
 
+  // Initialize from IndexedDB Repository with fallback migration from localStorage
   useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as Partial<PersistedState>;
-        if (Array.isArray(parsed.tasks)) setTasks(parsed.tasks.map((task) => normalizeTask(task)));
-        if (Array.isArray(parsed.sessions)) setSessions(parsed.sessions);
-        if (Array.isArray(parsed.quickTasks)) setQuickTasks(parsed.quickTasks);
-        if (Array.isArray(parsed.goals)) setGoals(parsed.goals.map((goal) => ({ ...goal, progressEntries: goal.progressEntries ?? [], progressMode: goal.progressMode ?? "numeric" })));
-      }
-    } catch {
-      // Preserve corrupt data for user recovery; do not destroy it on load.
-    } finally {
-      setHydrated(true);
-    }
-  }, []);
+    async function initData() {
+      try {
+        if (typeof window !== "undefined") {
+          // Check if Dexie has tasks already
+          const localTasks = await repository.getAllTasks(user?.id);
+          const localGoals = await repository.getAllGoals(user?.id);
+          const localQuick = await repository.getAllQuickTasks(user?.id);
+          const localSessions = await repository.getAllFocusSessions(user?.id);
 
+          if (localTasks.length > 0 || localGoals.length > 0) {
+            setTasks(localTasks.map(normalizeTask));
+            setGoals(localGoals);
+            setQuickTasks(localQuick);
+            setSessions(localSessions);
+          } else {
+            // First time: migrate from localStorage safely if present
+            const stored = window.localStorage.getItem(STORAGE_KEY);
+            if (stored) {
+              const parsed = JSON.parse(stored) as Partial<PersistedState>;
+              const migTasks = Array.isArray(parsed.tasks) ? parsed.tasks.map(normalizeTask) : SEED_TASKS;
+              const migGoals = Array.isArray(parsed.goals) ? parsed.goals : SEED_GOALS;
+              const migQuick = Array.isArray(parsed.quickTasks) ? parsed.quickTasks : SEED_QUICK_TASKS;
+              const migSessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+
+              // Create pre-migration recovery backup in localStorage
+              window.localStorage.setItem("execution-os-backup-pre-migration", stored);
+
+              setTasks(migTasks);
+              setGoals(migGoals);
+              setQuickTasks(migQuick);
+              setSessions(migSessions);
+
+              // Persist into IndexedDB
+              for (const t of migTasks) await repository.saveTask(t, true, user?.id);
+              for (const g of migGoals) await repository.saveGoal(g, true, user?.id);
+              for (const q of migQuick) await repository.saveQuickTask(q, true, user?.id);
+              for (const s of migSessions) await repository.saveFocusSession(s, user?.id);
+            } else {
+              // Seed into IndexedDB
+              for (const t of SEED_TASKS) await repository.saveTask(t, true, user?.id);
+              for (const g of SEED_GOALS) await repository.saveGoal(g, true, user?.id);
+              for (const q of SEED_QUICK_TASKS) await repository.saveQuickTask(q, true, user?.id);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("IndexedDB initialization error:", err);
+      } finally {
+        setHydrated(true);
+        // Automatically trigger sync if user is signed in
+        if (user) {
+          syncEngine.triggerSync(user.id).catch(() => undefined);
+        }
+      }
+    }
+
+    initData();
+  }, [user]);
+
+  // Keep backup in localStorage for extra resiliency
   useEffect(() => {
     if (!hydrated) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks, sessions, quickTasks, goals }));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks, sessions, quickTasks, goals }));
+    } catch {
+      // ignore quota exceeded if any
+    }
   }, [goals, hydrated, quickTasks, sessions, tasks]);
 
   const value = useMemo<ExecutionDataContext>(() => ({
@@ -171,54 +225,343 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
     quickTasks,
     addTask: (task) => {
       if (task.isMain && tasks.filter((item) => item.isMain && item.status !== "done").length >= 2) return false;
+      const newTask = normalizeTask({
+        ...task,
+        id: `task-${Date.now()}`,
+        createdAt: new Date().toISOString(),
+        actualDifficulty: null,
+        status: task.status ?? "todo",
+      } as TaskRecord);
+
       setTasks((current) => {
         if (task.isMain && current.filter((item) => item.isMain && item.status !== "done").length >= 2) return current;
-        return [...current, normalizeTask({ ...task, id: `task-${Date.now()}`, createdAt: new Date().toISOString(), actualDifficulty: null, status: task.status ?? "todo" } as TaskRecord)];
+        return [...current, newTask];
       });
+
+      // Write to IndexedDB repository + outbox atomically
+      repository.saveTask(newTask, true, user?.id).then(() => {
+        if (user) syncEngine.triggerSync(user.id);
+      }).catch(console.error);
+
       return true;
     },
-    updateTask: (id, task) => setTasks((current) => current.map((item) => item.id === id ? normalizeTask({ ...item, ...task, id: item.id, createdAt: item.createdAt }) : item)),
-    recordCompletion: (id, review) => setTasks((current) => current.map((item) => item.id === id ? { ...item, status: "done", actualDifficulty: review.actualDifficulty, completionReview: { ...review } } : item)),
-    startExecution: (id) => setTasks((current) => current.map((item) => item.id === id && item.status !== "done" ? { ...item, status: "in_progress", executionStartedAt: item.executionStartedAt ?? new Date().toISOString(), executionPausedAt: null } : item)),
-    pauseExecution: (id) => setTasks((current) => current.map((item) => {
-      if (item.id !== id || item.status !== "in_progress" || !item.executionStartedAt) return item;
-      const now = Date.now();
-      const elapsed = Math.max(0, now - new Date(item.executionStartedAt).getTime());
-      return { ...item, status: "todo", executionElapsedMs: (item.executionElapsedMs ?? 0) + elapsed, executionStartedAt: null, executionPausedAt: new Date(now).toISOString() };
-    })),
-    resumeExecution: (id) => setTasks((current) => current.map((item) => item.id === id && item.status !== "done" ? { ...item, status: "in_progress", executionStartedAt: new Date().toISOString(), executionPausedAt: null } : item)),
-    archiveTask: (id) => setTasks((current) => current.map((item) => item.id === id ? { ...item, status: "done" } : item)),
-    deleteTask: (id) => setTasks((current) => current.filter((task) => task.id !== id)),
-    startTask: (id) => setTasks((current) => current.map((task) => task.id === id ? { ...task, status: "in_progress", executionStartedAt: new Date().toISOString() } : task)),
-    completeTask: (id, actualDifficulty) => setTasks((current) => current.map((task) => task.id === id ? { ...task, status: "done", actualDifficulty } : task)),
-    addFocusSession: (session) => setSessions((current) => current.some((item) => item.id === session.id) ? current : [...current, { ...session, id: session.id || `session-${Date.now()}` }]),
-    addGoal: (goal) => setGoals((current) => [...current, { ...goal, id: `goal-${Date.now()}`, progress: goal.progress ?? 0, progressEntries: goal.progressEntries ?? [] }]),
-    updateGoal: (id, patch) => setGoals((current) => current.map((goal) => goal.id === id ? { ...goal, ...patch, id: goal.id } : goal)),
-    updateGoalProgress: (id, progress, note = "") => setGoals((current) => current.map((goal) => goal.id === id ? { ...goal, progress, progressEntries: [...(goal.progressEntries ?? []), { id: `progress-${Date.now()}`, value: progress, note, recordedAt: new Date().toISOString() }], updatedAt: new Date().toISOString() } : goal)),
+    updateTask: (id, patch) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((item) => {
+          if (item.id === id) {
+            updatedRecord = normalizeTask({ ...item, ...patch, id: item.id, createdAt: item.createdAt });
+            return updatedRecord;
+          }
+          return item;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    recordCompletion: (id, review) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((item) => {
+          if (item.id === id) {
+            updatedRecord = {
+              ...item,
+              status: "done",
+              actualDifficulty: review.actualDifficulty,
+              completionReview: { ...review },
+            };
+            return updatedRecord;
+          }
+          return item;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    startExecution: (id) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((item) => {
+          if (item.id === id && item.status !== "done") {
+            updatedRecord = {
+              ...item,
+              status: "in_progress",
+              executionStartedAt: item.executionStartedAt ?? new Date().toISOString(),
+              executionPausedAt: null,
+            };
+            return updatedRecord;
+          }
+          return item;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    pauseExecution: (id) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((item) => {
+          if (item.id !== id || item.status !== "in_progress" || !item.executionStartedAt) return item;
+          const now = Date.now();
+          const elapsed = Math.max(0, now - new Date(item.executionStartedAt).getTime());
+          updatedRecord = {
+            ...item,
+            status: "todo",
+            executionElapsedMs: (item.executionElapsedMs ?? 0) + elapsed,
+            executionStartedAt: null,
+            executionPausedAt: new Date(now).toISOString(),
+          };
+          return updatedRecord;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    resumeExecution: (id) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((item) => {
+          if (item.id === id && item.status !== "done") {
+            updatedRecord = {
+              ...item,
+              status: "in_progress",
+              executionStartedAt: new Date().toISOString(),
+              executionPausedAt: null,
+            };
+            return updatedRecord;
+          }
+          return item;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    archiveTask: (id) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((item) => {
+          if (item.id === id) {
+            updatedRecord = { ...item, status: "done" };
+            return updatedRecord;
+          }
+          return item;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    deleteTask: (id) => {
+      setTasks((current) => current.filter((task) => task.id !== id));
+      repository.deleteTask(id, user?.id).then(() => {
+        if (user) syncEngine.triggerSync(user.id);
+      }).catch(console.error);
+    },
+    startTask: (id) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((task) => {
+          if (task.id === id) {
+            updatedRecord = { ...task, status: "in_progress", executionStartedAt: new Date().toISOString() };
+            return updatedRecord;
+          }
+          return task;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    completeTask: (id, actualDifficulty) => {
+      let updatedRecord: TaskRecord | null = null;
+      setTasks((current) =>
+        current.map((task) => {
+          if (task.id === id) {
+            updatedRecord = { ...task, status: "done", actualDifficulty };
+            return updatedRecord;
+          }
+          return task;
+        })
+      );
+      if (updatedRecord) {
+        repository.saveTask(updatedRecord, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    addFocusSession: (session) => {
+      const fullSession: FocusSession = {
+        ...session,
+        id: session.id || `session-${Date.now()}`,
+      };
+      setSessions((current) => (current.some((item) => item.id === fullSession.id) ? current : [...current, fullSession]));
+      repository.saveFocusSession(fullSession, user?.id).then(() => {
+        if (user) syncEngine.triggerSync(user.id);
+      }).catch(console.error);
+    },
+    addGoal: (goal) => {
+      const newGoal: GoalRecord = {
+        ...goal,
+        id: `goal-${Date.now()}`,
+        progress: goal.progress ?? 0,
+        progressEntries: goal.progressEntries ?? [],
+      };
+      setGoals((current) => [...current, newGoal]);
+      repository.saveGoal(newGoal, true, user?.id).then(() => {
+        if (user) syncEngine.triggerSync(user.id);
+      }).catch(console.error);
+    },
+    updateGoal: (id, patch) => {
+      let updatedGoal: GoalRecord | null = null;
+      setGoals((current) =>
+        current.map((goal) => {
+          if (goal.id === id) {
+            updatedGoal = { ...goal, ...patch, id: goal.id };
+            return updatedGoal;
+          }
+          return goal;
+        })
+      );
+      if (updatedGoal) {
+        repository.saveGoal(updatedGoal, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    deleteGoal: (id) => {
+      setGoals((current) => current.filter((goal) => goal.id !== id));
+      repository.deleteGoal(id, user?.id).then(() => {
+        if (user) syncEngine.triggerSync(user.id);
+      }).catch(console.error);
+    },
+    updateGoalProgress: (id, progress, note = "") => {
+      let updatedGoal: GoalRecord | null = null;
+      setGoals((current) =>
+        current.map((goal) => {
+          if (goal.id === id) {
+            updatedGoal = {
+              ...goal,
+              progress,
+              progressEntries: [
+                ...(goal.progressEntries ?? []),
+                { id: `progress-${Date.now()}`, value: progress, note, recordedAt: new Date().toISOString() },
+              ],
+              updatedAt: new Date().toISOString(),
+            };
+            return updatedGoal;
+          }
+          return goal;
+        })
+      );
+      if (updatedGoal) {
+        repository.saveGoal(updatedGoal, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
     restoreData: (data, mode) => {
       const mergeById = <T extends { id: string }>(existing: T[], incoming: T[]) => {
         const map = new Map(existing.map((item) => [item.id, item]));
         incoming.forEach((item) => map.set(item.id, item));
         return [...map.values()];
       };
-      if (data.tasks) setTasks((current) => mode === "replace" ? data.tasks!.map(normalizeTask) : mergeById(current, data.tasks!.map(normalizeTask)));
-      if (data.goals) setGoals((current) => mode === "replace" ? data.goals! : mergeById(current, data.goals!));
-      if (data.sessions) setSessions((current) => mode === "replace" ? data.sessions! : mergeById(current, data.sessions!));
-      if (data.quickTasks) setQuickTasks((current) => mode === "replace" ? data.quickTasks! : mergeById(current, data.quickTasks!));
+      if (data.tasks) {
+        const targetTasks = mode === "replace" ? data.tasks.map(normalizeTask) : mergeById(tasks, data.tasks.map(normalizeTask));
+        setTasks(targetTasks);
+        targetTasks.forEach((t) => repository.saveTask(t, false, user?.id));
+      }
+      if (data.goals) {
+        const targetGoals = mode === "replace" ? data.goals : mergeById(goals, data.goals);
+        setGoals(targetGoals);
+        targetGoals.forEach((g) => repository.saveGoal(g, false, user?.id));
+      }
+      if (data.sessions) {
+        const targetSessions = mode === "replace" ? data.sessions : mergeById(sessions, data.sessions);
+        setSessions(targetSessions);
+        targetSessions.forEach((s) => repository.saveFocusSession(s, user?.id));
+      }
+      if (data.quickTasks) {
+        const targetQuick = mode === "replace" ? data.quickTasks : mergeById(quickTasks, data.quickTasks);
+        setQuickTasks(targetQuick);
+        targetQuick.forEach((q) => repository.saveQuickTask(q, false, user?.id));
+      }
     },
     addQuickTask: (title) => {
       const trimmed = title.trim();
       if (!trimmed) return;
-      setQuickTasks((current) => [...current, { id: `quick-${Date.now()}`, title: trimmed, completed: false, createdAt: new Date().toISOString() }]);
+      const newQuick: QuickTask = {
+        id: `quick-${Date.now()}`,
+        title: trimmed,
+        completed: false,
+        createdAt: new Date().toISOString(),
+      };
+      setQuickTasks((current) => [...current, newQuick]);
+      repository.saveQuickTask(newQuick, true, user?.id).then(() => {
+        if (user) syncEngine.triggerSync(user.id);
+      }).catch(console.error);
     },
     updateQuickTask: (id, title) => {
       const trimmed = title.trim();
       if (!trimmed) return;
-      setQuickTasks((current) => current.map((item) => item.id === id ? { ...item, title: trimmed } : item));
+      let updated: QuickTask | null = null;
+      setQuickTasks((current) =>
+        current.map((item) => {
+          if (item.id === id) {
+            updated = { ...item, title: trimmed };
+            return updated;
+          }
+          return item;
+        })
+      );
+      if (updated) {
+        repository.saveQuickTask(updated, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
     },
-    toggleQuickTask: (id) => setQuickTasks((current) => current.map((item) => item.id === id ? { ...item, completed: !item.completed } : item)),
-    deleteQuickTask: (id) => setQuickTasks((current) => current.filter((item) => item.id !== id)),
-  }), [goals, quickTasks, sessions, tasks]);
+    toggleQuickTask: (id) => {
+      let updated: QuickTask | null = null;
+      setQuickTasks((current) =>
+        current.map((item) => {
+          if (item.id === id) {
+            updated = { ...item, completed: !item.completed };
+            return updated;
+          }
+          return item;
+        })
+      );
+      if (updated) {
+        repository.saveQuickTask(updated, false, user?.id).then(() => {
+          if (user) syncEngine.triggerSync(user.id);
+        }).catch(console.error);
+      }
+    },
+    deleteQuickTask: (id) => {
+      setQuickTasks((current) => current.filter((item) => item.id !== id));
+      repository.deleteQuickTask(id, user?.id).then(() => {
+        if (user) syncEngine.triggerSync(user.id);
+      }).catch(console.error);
+    },
+  }), [goals, quickTasks, sessions, tasks, user]);
 
   return <ExecutionDataContext.Provider value={value}>{children}</ExecutionDataContext.Provider>;
 }

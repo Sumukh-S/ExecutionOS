@@ -33,7 +33,8 @@ export default function TodayPage() {
     deleteQuickTask,
   } = useExecutionData();
   const [editingTask, setEditingTask] = useState<TaskRecord | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
+  const [showCreateMain, setShowCreateMain] = useState(false);
+  const [showCreateSubtask, setShowCreateSubtask] = useState(false);
   const [completionTask, setCompletionTask] = useState<TaskRecord | null>(null);
   const [successMessage, setSuccessMessage] = useState("");
   const [detailTask, setDetailTask] = useState<TaskRecord | null>(null);
@@ -52,13 +53,20 @@ export default function TodayPage() {
     return () => window.clearTimeout(timer);
   }, [successMessage]);
 
-  const handleCreateSubmit = (values: TaskFormValues) => {
-    const payload = formValuesToTaskPayload({ ...values, isMain: true });
+  const handleCreateMainSubmit = (values: TaskFormValues) => {
+    const payload = formValuesToTaskPayload({ ...values, isMain: true, parentId: null });
     const saved = addTask(payload);
     if (!saved) {
       return "Maximum of 2 active main tasks reached. Complete or delete a main task before adding another.";
     }
-    setSuccessMessage("Task added to today.");
+    setSuccessMessage("Main task added to today.");
+  };
+
+  const handleCreateSubtaskSubmit = (values: TaskFormValues) => {
+    const payload = formValuesToTaskPayload({ ...values, isMain: false, parentId: null });
+    addTask(payload);
+    setSuccessMessage("Subtask added to today.");
+    return undefined;
   };
 
   const handleEditSubmit = (values: TaskFormValues) => {
@@ -121,9 +129,14 @@ export default function TodayPage() {
             <h1 className="text-2xl font-bold tracking-tight">Today</h1>
             <p className="text-muted-foreground">{formatDate(new Date())} · {todayTasks.length} tasks due or scheduled today</p>
           </div>
-          <Button className="gap-2" onClick={() => setShowCreate(true)} disabled={!canAddMain} title={canAddMain ? "Add a task for today" : "Complete or delete a main task before adding another"}>
-            <Plus className="h-4 w-4" />Add today task
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" className="gap-2" onClick={() => setShowCreateMain(true)} disabled={!canAddMain} title={canAddMain ? "Add a main task for today" : "Complete or delete a main task before adding another"}>
+              <Plus className="h-4 w-4" />Add main task
+            </Button>
+            <Button className="gap-2" onClick={() => setShowCreateSubtask(true)}>
+              <Plus className="h-4 w-4" />Add subtask
+            </Button>
+          </div>
         </div>
         {successMessage && (
           <output className="fixed right-4 top-4 z-[80] flex max-w-sm items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-card px-4 py-3 text-sm text-emerald-700 shadow-2xl dark:text-emerald-300">
@@ -193,19 +206,34 @@ export default function TodayPage() {
           </div>
         </div>
       )}
-      {showCreate && (
+      {showCreateMain && (
         <TaskFormDialog
-          title="Add a task for today"
-          description="Dates are locked to today."
+          title="Add main task for today"
+          description="Main tasks are pinned and locked to today."
           initialValues={taskToFormValues(null, { scheduledStart: `${todayKey()}T09:00`, expectedDuration: 30 })}
           todayOnly
-          submitLabel="Add task"
+          submitLabel="Add main task"
           onSubmit={(values) => {
-            const err = handleCreateSubmit(values);
+            const err = handleCreateMainSubmit(values);
             if (err) return err;
-            setShowCreate(false);
+            setShowCreateMain(false);
           }}
-          onClose={() => setShowCreate(false)}
+          onClose={() => setShowCreateMain(false)}
+        />
+      )}
+      {showCreateSubtask && (
+        <TaskFormDialog
+          title="Add subtask for today"
+          description="Subtasks are locked to today."
+          initialValues={taskToFormValues(null, { scheduledStart: `${todayKey()}T09:00`, expectedDuration: 30, isMain: false })}
+          todayOnly
+          submitLabel="Add subtask"
+          onSubmit={(values) => {
+            const err = handleCreateSubtaskSubmit(values);
+            if (err) return err;
+            setShowCreateSubtask(false);
+          }}
+          onClose={() => setShowCreateSubtask(false)}
         />
       )}
       {editingTask && (

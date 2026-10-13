@@ -17,10 +17,14 @@ import {
   X,
   Sun,
   Layers,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/contexts/theme";
+import { useAuth } from "@/contexts/auth";
+import { SyncStatusIndicator } from "@/components/sync-status-indicator";
+import { AuthDialog } from "@/components/auth-dialog";
 
 const allNavItems = [
   { href: "/", label: "Today", icon: Home },
@@ -45,7 +49,9 @@ const mobileNavItems = [
 export function Header() {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
+  const { user } = useAuth();
 
   return (
     <>
@@ -72,15 +78,18 @@ export function Header() {
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Execution OS</p>
             <h2 className="text-lg font-bold text-foreground">Menu</h2>
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-10 w-10 rounded-xl"
-            onClick={() => setDrawerOpen(false)}
-            aria-label="Close menu"
-          >
-            <X className="h-6 w-6" strokeWidth={2.5} />
-          </Button>
+          <div className="flex items-center gap-2">
+            <SyncStatusIndicator />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-10 w-10 rounded-xl"
+              onClick={() => setDrawerOpen(false)}
+              aria-label="Close menu"
+            >
+              <X className="h-6 w-6" strokeWidth={2.5} />
+            </Button>
+          </div>
         </div>
 
         <nav className="flex-1 space-y-1.5 overflow-y-auto p-4">
@@ -105,7 +114,16 @@ export function Header() {
           })}
         </nav>
 
-        <div className="border-t border-border p-4 bg-card/50">
+        <div className="border-t border-border p-4 bg-card/50 space-y-2">
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-3 rounded-xl h-11 text-sm font-medium"
+            onClick={() => setAuthOpen(true)}
+          >
+            <User className="h-4 w-4 text-primary" />
+            <span>{user ? user.email : "Sign In to Sync Devices"}</span>
+          </Button>
+
           <Button
             variant="outline"
             className="w-full justify-start gap-3 rounded-xl h-11 text-sm font-medium"
@@ -181,6 +199,19 @@ export function Header() {
 
           <div className="mx-1 h-5 w-px bg-border/80" />
 
+          <SyncStatusIndicator />
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full text-muted-foreground transition-all duration-300 hover:-translate-y-1 hover:scale-110 hover:text-foreground"
+            onClick={() => setAuthOpen(true)}
+            aria-label="Account and sync"
+            title={user ? `Signed in as ${user.email}` : "Sign In to Sync"}
+          >
+            <User className="h-4 w-4 text-primary" />
+          </Button>
+
           <Button
             variant="ghost"
             size="icon"
@@ -193,6 +224,9 @@ export function Header() {
           </Button>
         </div>
       </nav>
+
+      {/* 5. Authentication Dialog for Desktop and Mobile */}
+      <AuthDialog isOpen={authOpen} onClose={() => setAuthOpen(false)} />
     </>
   );
 }

@@ -153,7 +153,7 @@ export function TaskFormDialog({
       <form onSubmit={submit} className="mx-auto my-4 max-w-3xl rounded-xl border border-border bg-card p-5 shadow-2xl sm:p-7">
         <div className="flex items-center justify-between gap-4">
           <div><h2 className="text-xl font-semibold">{title}</h2><p className="text-sm text-muted-foreground">{description}</p></div>
-          <Button type="button" variant="ghost" size="icon" className="h-11 w-11" onClick={onClose} aria-label="Close task form"><X className="h-6 w-6" strokeWidth={2.5} /></Button>
+          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent border border-border/40" onClick={onClose} aria-label="Close task form"><X className="h-5 w-5" /></Button>
         </div>
         {error && <p role="alert" className="mt-4 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">{error}</p>}
 

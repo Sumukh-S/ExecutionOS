@@ -33,6 +33,7 @@ yarn-error.log*
 .env.development
 .env.test
 .env.production
+note.txt
 
 # TypeScript Cache
 *.tsbuildinfo

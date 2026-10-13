@@ -6,12 +6,20 @@ import { AuthProvider } from "@/contexts/auth";
 import { ThemeProvider } from "@/contexts/theme";
 import { ExecutionDataProvider } from "@/contexts/execution-data";
 import { PageMeta } from "@/components/layout/page-meta";
+import { ServiceWorkerRegister } from "@/components/sw-register";
+import { AuthGate } from "@/components/auth-gate";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
   title: { default: "Execution OS", template: "%s · Execution OS" },
   description: "Personal execution and productivity operating system",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Execution OS",
+  },
 };
 
 export default function RootLayout({
@@ -22,14 +30,17 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
       <body className={`${inter.variable} min-h-screen bg-background`}>
+        <ServiceWorkerRegister />
         <ThemeProvider>
-          <ExecutionDataProvider>
-            <AuthProvider>
-              <PageMeta />
-              <Header />
-              <main className="min-w-0 overflow-x-hidden pb-24 lg:pb-32">{children}</main>
-            </AuthProvider>
-          </ExecutionDataProvider>
+          <AuthProvider>
+            <AuthGate>
+              <ExecutionDataProvider>
+                <PageMeta />
+                <Header />
+                <main className="min-w-0 overflow-x-hidden pb-24 lg:pb-32">{children}</main>
+              </ExecutionDataProvider>
+            </AuthGate>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>
