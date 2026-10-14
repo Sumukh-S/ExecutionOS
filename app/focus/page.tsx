@@ -1,566 +1,397 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Clock3, Coffee, History, Pause, Play, RotateCcw, Settings2, Zap } from "lucide-react";
+import { Play, Pause, Square, Coffee, CheckCircle2, RotateCcw, AlertTriangle, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { getTaskQuadrant, useExecutionData } from "@/contexts/execution-data";
-import { formatSessionDate, formatTime as formatClockTime } from "@/lib/dates";
+import { Input } from "@/components/ui/input";
+import { useExecutionData } from "@/contexts/execution-data";
+import { useNotificationPermission } from "@/lib/notifications";
+import type { MasterTask, FocusSession } from "@/types/execution-os";
 
-const WORK_PRESETS = [15, 25, 30, 45, 50, 60];
-const BREAK_PRESETS = [5, 10, 15, 20];
-type TimerStatus = "idle" | "running" | "paused";
-type TimerMode = "work" | "break";
-
-function formatSecondsDisplay(totalSecs: number) {
-  const m = Math.floor(totalSecs / 60);
-  const s = totalSecs % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-function isToday(value: string) {
-  return Boolean(value && new Date(value).toDateString() === new Date().toDateString());
-}
+const workGrades = [
+  { grade: 0, label: "Grade 0 (2–9 min)", defaultMin: 5, desc: "Entry-level action during high resistance, distraction or recovery." },
+  { grade: 1, label: "Grade 1 (10–30 min)", defaultMin: 15, desc: "Comfortable starting duration for steady focus." },
+  { grade: 2, label: "Grade 2 (30–60 min)", defaultMin: 35, desc: "Deeper immersion for complex analytical work." },
+  { grade: 3, label: "Grade 3 (60–90 min)", defaultMin: 60, desc: "Extended focus for high capacity periods." },
+  { grade: 4, label: "Grade 4 (90 min+)", defaultMin: 90, desc: "Peak sustained immersion. No pressure to go further." },
+];
 
 export default function FocusPage() {
-  const { tasks, sessions, addFocusSession, quickTasks } = useExecutionData();
+  const { masterTasks, recordFocusSession, focusSessions } = useExecutionData();
+  const { scheduleLocalNotification } = useNotificationPermission();
 
-  const dailyTasks = useMemo(() => {
-    return tasks.filter((t) => isToday(t.scheduledStart) && t.status !== "done");
-  }, [tasks]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string>("");
+  const [selectedGrade, setSelectedGrade] = useState<number>(1);
+  const [durationMinutes, setDurationMinutes] = useState<number>(15);
 
-  const eisenhowerBreakTasks = useMemo(() => {
-    return tasks.filter((t) => t.status !== "done" && ["q2", "q3", "q4"].includes(getTaskQuadrant(t)));
-  }, [tasks]);
+  // Timer states
+  const [mode, setMode] = useState<"idle" | "focus" | "break">("idle");
+  const [isRunning, setIsRunning] = useState(false);
+  const [secondsRemaining, setSecondsRemaining] = useState(15 * 60);
+  const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
 
-  const activeQuickTasks = useMemo(() => {
-    return quickTasks.filter((q) => !q.completed);
-  }, [quickTasks]);
+  // Review & extension modal
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [actualDifficulty, setActualDifficulty] = useState(5);
+  const [interruptionReason, setInterruptionReason] = useState("");
+  const [sessionReflection, setSessionReflection] = useState("");
 
-  const [mode, setMode] = useState<TimerMode>("work");
-  const [status, setStatus] = useState<TimerStatus>("idle");
-  const [durationMinutes, setDurationMinutes] = useState(25);
-  const [breakMinutes, setBreakMinutes] = useState(5);
-  const [remainingSeconds, setRemainingSeconds] = useState(25 * 60);
-  const [selectedTaskId, setSelectedTaskId] = useState("");
-  const [selectedBreakOption, setSelectedBreakOption] = useState("");
-  const [startedAt, setStartedAt] = useState("");
-  const [error, setError] = useState("");
-  const [customWorkInput, setCustomWorkInput] = useState("25");
-  const [customBreakInput, setCustomBreakInput] = useState("5");
+  const activeTasks = useMemo(() => masterTasks.filter((t) => t.status !== "done" && !t.deletedAt), [masterTasks]);
+  const activeTask = useMemo(() => masterTasks.find((t) => t.id === selectedTaskId), [masterTasks, selectedTaskId]);
 
-  const selectedTask = useMemo(() => {
-    return tasks.find((t) => t.id === selectedTaskId);
-  }, [tasks, selectedTaskId]);
-
-  const selectedBreakTaskTitle = useMemo(() => {
-    if (!selectedBreakOption) return "";
-    if (selectedBreakOption.startsWith("quick:")) {
-      const qId = selectedBreakOption.replace("quick:", "");
-      const q = quickTasks.find((item) => item.id === qId);
-      return q ? `⚡ ${q.title}` : "";
+  // Sync default duration when grade changes
+  const handleSelectGrade = (grade: number) => {
+    setSelectedGrade(grade);
+    const g = workGrades.find((item) => item.grade === grade);
+    if (g && mode === "idle") {
+      setDurationMinutes(g.defaultMin);
+      setSecondsRemaining(g.defaultMin * 60);
     }
-    if (selectedBreakOption.startsWith("task:")) {
-      const tId = selectedBreakOption.replace("task:", "");
-      const t = tasks.find((item) => item.id === tId);
-      return t ? `📋 ${t.title}` : "";
-    }
-    return "";
-  }, [selectedBreakOption, quickTasks, tasks]);
+  };
 
-  const totalSeconds = (mode === "work" ? durationMinutes : breakMinutes) * 60;
-  const progressPercent = totalSeconds > 0 ? ((totalSeconds - remainingSeconds) / totalSeconds) * 100 : 0;
-
+  // Timer tick
   useEffect(() => {
-    if (status !== "running") return;
-    const timer = window.setInterval(() => setRemainingSeconds((value) => Math.max(0, value - 1)), 1000);
-    return () => window.clearInterval(timer);
-  }, [status]);
-
-  useEffect(() => {
-    if (status !== "running" || remainingSeconds !== 0) return;
-    const endedAt = new Date().toISOString();
-
-    if (mode === "work" && selectedTask && startedAt) {
-      addFocusSession({
-        taskId: selectedTask.id,
-        taskTitle: selectedTask.title,
-        startedAt,
-        endedAt,
-        durationMinutes,
-      });
+    let interval: NodeJS.Timeout | null = null;
+    if (isRunning && secondsRemaining > 0) {
+      interval = setInterval(() => {
+        setSecondsRemaining((sec) => sec - 1);
+      }, 1000);
+    } else if (isRunning && secondsRemaining === 0) {
+      setIsRunning(false);
+      scheduleLocalNotification(
+        mode === "focus" ? "Focus session complete!" : "Break complete! Ready to return?",
+        { body: mode === "focus" ? "Record your session review." : "Choose your next focus duration." }
+      );
+      if (mode === "focus") {
+        setShowReviewModal(true);
+      } else {
+        setMode("idle");
+        setSecondsRemaining(durationMinutes * 60);
+      }
     }
 
-    setStatus("idle");
-    setStartedAt("");
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isRunning, secondsRemaining, mode, scheduleLocalNotification, durationMinutes]);
 
-    try {
-      void new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3").play().catch(() => undefined);
-    } catch {
-      // ignore
-    }
-  }, [addFocusSession, durationMinutes, mode, remainingSeconds, selectedTask, startedAt, status]);
-
-  const handleModeSwitch = (nextMode: TimerMode) => {
-    if (status !== "idle") return;
-    setMode(nextMode);
-    setRemainingSeconds((nextMode === "work" ? durationMinutes : breakMinutes) * 60);
-    setError("");
+  const handleStartFocus = () => {
+    setMode("focus");
+    setIsRunning(true);
+    setSessionStartTime(new Date().toISOString());
   };
 
-  const handleStart = () => {
-    if (mode === "work" && !selectedTaskId) {
-      setError("Please choose the daily task you are going to do before starting.");
-      return;
-    }
-    if (mode === "break" && !selectedBreakOption) {
-      setError("Please choose a break task from under 5 min tasks or Eisenhower Q2/Q3/Q4.");
-      return;
-    }
-
-    setError("");
-    setStartedAt(mode === "work" ? new Date().toISOString() : "");
-    setStatus("running");
+  const handlePause = () => {
+    setIsRunning(false);
   };
 
-  const handlePause = () => setStatus("paused");
-
-  const handleReset = () => {
-    setStatus("idle");
-    setStartedAt("");
-    setRemainingSeconds((mode === "work" ? durationMinutes : breakMinutes) * 60);
-    setError("");
+  const handleResume = () => {
+    setIsRunning(true);
   };
 
-  const handleApplyCustomWork = (minutesVal: number) => {
-    const val = Math.max(1, Math.min(180, minutesVal || 1));
-    setDurationMinutes(val);
-    setCustomWorkInput(String(val));
-    if (status === "idle" && mode === "work") {
-      setRemainingSeconds(val * 60);
-    }
+  const handleStopEarly = () => {
+    setIsRunning(false);
+    setShowReviewModal(true);
   };
 
-  const handleApplyCustomBreak = (minutesVal: number) => {
-    const val = Math.max(1, Math.min(60, minutesVal || 1));
-    setBreakMinutes(val);
-    setCustomBreakInput(String(val));
-    if (status === "idle" && mode === "break") {
-      setRemainingSeconds(val * 60);
-    }
+  const handleStartBreak = (mins = 5) => {
+    setShowReviewModal(false);
+    setMode("break");
+    setSecondsRemaining(mins * 60);
+    setIsRunning(true);
   };
 
-  const statusDotClass = useMemo(() => {
-    if (status === "running") return "bg-emerald-500 animate-pulse";
-    if (status === "paused") return "bg-yellow-500";
-    return "bg-muted-foreground/50";
-  }, [status]);
+  const handleExtend = (extraMins: number) => {
+    setShowReviewModal(false);
+    setSecondsRemaining(extraMins * 60);
+    setIsRunning(true);
+  };
 
-  const statusLabel = useMemo(() => {
-    if (status === "running") return "Running";
-    if (status === "paused") return "Paused";
-    return "Ready";
-  }, [status]);
+  const handleSaveReview = async () => {
+    if (!sessionStartTime) return;
+    const nowIso = new Date().toISOString();
+    const elapsedMinutes = Math.max(1, Math.round((durationMinutes * 60 - secondsRemaining) / 60));
 
-  const recentSessions = useMemo(() => {
-    return [...sessions].reverse();
-  }, [sessions]);
+    await recordFocusSession({
+      taskId: selectedTaskId || null,
+      occurrenceId: null,
+      taskTitle: activeTask?.title || "Free Focus",
+      workGrade: selectedGrade,
+      intendedDuration: durationMinutes,
+      actualDuration: elapsedMinutes,
+      startedAt: sessionStartTime,
+      endedAt: nowIso,
+      status: secondsRemaining === 0 ? "completed" : "interrupted",
+      actualDifficulty,
+      interruptionReason: interruptionReason.trim() || undefined,
+      reflection: sessionReflection.trim() || undefined,
+    });
 
-  const radius = 120;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (progressPercent / 100) * circumference;
+    setShowReviewModal(false);
+    setMode("idle");
+    setSecondsRemaining(durationMinutes * 60);
+  };
+
+  // Capacity progression guidance
+  const gradeProgression = useMemo(() => {
+    const recentAtGrade = focusSessions.filter((f) => f.workGrade === selectedGrade).slice(0, 5);
+    const successfulCount = recentAtGrade.filter((f) => f.status === "completed").length;
+    const canProgress = recentAtGrade.length >= 5 && successfulCount >= 4 && selectedGrade < 4;
+    return {
+      canProgress,
+      successfulCount,
+      totalCount: recentAtGrade.length,
+      nextGrade: selectedGrade + 1,
+    };
+  }, [focusSessions, selectedGrade]);
+
+  const formatTimer = (totalSeconds: number) => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  };
 
   return (
-    <div className="min-h-screen p-4 pb-24 sm:p-6 lg:p-8">
-      <div className="mx-auto max-w-5xl space-y-8">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary">
-                <Zap className="h-4 w-4" />
-              </span>
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Focus & Pomodoro</h1>
+    <div className="min-h-screen p-4 pb-28 sm:p-6 lg:p-8">
+      <div className="mx-auto max-w-4xl space-y-8">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Focus & Working Capacity</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Gradually build working endurance without burnout using Work Grades 0–4.
+          </p>
+        </div>
+
+        {/* Capacity Progression Notice */}
+        {gradeProgression.canProgress && (
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-primary/30 bg-primary/10 p-4">
+            <div className="flex items-center gap-2.5">
+              <Sparkles className="h-5 w-5 text-primary" />
+              <div>
+                <p className="text-sm font-semibold text-foreground">Capacity Progression Recommendation</p>
+                <p className="text-xs text-muted-foreground">
+                  You completed {gradeProgression.successfulCount} of your last {gradeProgression.totalCount} sessions at Grade {selectedGrade}. Would you like to advance to Grade {gradeProgression.nextGrade}?
+                </p>
+              </div>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Deep work bounded by time. Select your daily task to begin.
-            </p>
+            <Button size="sm" onClick={() => handleSelectGrade(gradeProgression.nextGrade)}>
+              Advance to Grade {gradeProgression.nextGrade}
+            </Button>
+          </div>
+        )}
+
+        {/* Timer Card */}
+        <div className="flex flex-col items-center justify-center rounded-3xl border border-border bg-card p-8 text-center shadow-lg sm:p-12">
+          <Badge variant={mode === "break" ? "secondary" : "default"} className="mb-4 uppercase tracking-wider text-xs px-3 py-1">
+            {mode === "break" ? "Break Timer" : `Focus Mode · Grade ${selectedGrade}`}
+          </Badge>
+
+          {/* Large Countdown */}
+          <div className="font-mono text-6xl font-extrabold tracking-tight text-foreground sm:text-8xl">
+            {formatTimer(secondsRemaining)}
           </div>
 
-          <div className="flex items-center gap-1 rounded-xl border border-border bg-card p-1 shadow-sm">
-            <button
-              type="button"
-              onClick={() => handleModeSwitch("work")}
-              className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs sm:text-sm font-medium transition-all ${
-                mode === "work"
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Zap className="h-3.5 w-3.5" />
-              Focus Work
-            </button>
-            <button
-              type="button"
-              onClick={() => handleModeSwitch("break")}
-              className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs sm:text-sm font-medium transition-all ${
-                mode === "break"
-                  ? "bg-accent text-accent-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Coffee className="h-3.5 w-3.5" />
-              Break
-            </button>
+          {/* Active Task Callout */}
+          <p className="mt-4 text-sm font-medium text-muted-foreground">
+            {activeTask ? (
+              <span>Target: <strong className="text-foreground">{activeTask.title}</strong></span>
+            ) : (
+              <span>No task selected (Autonomous Focus)</span>
+            )}
+          </p>
+
+          {/* Controls */}
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            {mode === "idle" && (
+              <Button size="lg" onClick={handleStartFocus} className="gap-2 px-8 text-base shadow-md">
+                <Play className="h-5 w-5" />
+                Start Focus Session
+              </Button>
+            )}
+
+            {mode !== "idle" && isRunning && (
+              <Button size="lg" variant="outline" onClick={handlePause} className="gap-2 px-6">
+                <Pause className="h-5 w-5" />
+                Pause
+              </Button>
+            )}
+
+            {mode !== "idle" && !isRunning && (
+              <Button size="lg" onClick={handleResume} className="gap-2 px-6">
+                <Play className="h-5 w-5" />
+                Resume
+              </Button>
+            )}
+
+            {mode !== "idle" && (
+              <Button size="lg" variant="destructive" onClick={handleStopEarly} className="gap-2 px-6">
+                <Square className="h-4 w-4" />
+                End Session
+              </Button>
+            )}
+
+            {mode === "idle" && (
+              <Button size="lg" variant="outline" onClick={() => handleStartBreak(5)} className="gap-2">
+                <Coffee className="h-4 w-4" />
+                Quick 5m Break
+              </Button>
+            )}
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="space-y-6">
-            <Card className="relative overflow-hidden border-border/70 bg-gradient-to-b from-card to-card/60 shadow-lg">
-              <CardContent className="p-6 sm:p-10 flex flex-col items-center">
-                <div className="relative flex items-center justify-center my-4">
-                  <svg className="h-64 w-64 sm:h-72 sm:w-72 -rotate-90 transform" viewBox="0 0 280 280">
-                    <circle
-                      cx="140"
-                      cy="140"
-                      r={radius}
-                      className="stroke-muted/40"
-                      strokeWidth="6"
-                      fill="transparent"
-                    />
-                    <circle
-                      cx="140"
-                      cy="140"
-                      r={radius}
-                      stroke="currentColor"
-                      strokeWidth="7"
-                      strokeDasharray={circumference}
-                      strokeDashoffset={strokeDashoffset}
-                      strokeLinecap="round"
-                      fill="transparent"
-                      className={`transition-all duration-500 ease-linear ${
-                        mode === "work" ? "text-primary" : "text-emerald-500"
-                      }`}
-                    />
-                  </svg>
+        {/* Task Selection & Configuration */}
+        {mode === "idle" && (
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            {/* Task Selector */}
+            <div className="rounded-2xl border border-border bg-card p-6 shadow-sm space-y-3">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Choose Focus Task</h2>
+              <select
+                value={selectedTaskId}
+                onChange={(e) => setSelectedTaskId(e.target.value)}
+                className="w-full rounded-lg border border-input bg-background p-2.5 text-sm"
+              >
+                <option value="">Autonomous focus (no task linked)</option>
+                {activeTasks.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.title} (Est. {t.expectedDuration}m)
+                  </option>
+                ))}
+              </select>
 
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                    <span className="text-xs uppercase tracking-[0.25em] font-semibold text-muted-foreground mb-1">
-                      {mode === "work" ? "Focus Session" : "Rest & Reset"}
-                    </span>
-                    <div className="font-mono text-5xl sm:text-6xl font-light tracking-tight text-foreground select-none">
-                      {formatSecondsDisplay(remainingSeconds)}
-                    </div>
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <span className={`inline-block h-2 w-2 rounded-full ${statusDotClass}`} />
-                      <span className="text-xs text-muted-foreground font-medium">{statusLabel}</span>
-                    </div>
-
-                    {mode === "work" && selectedTask && (
-                      <div className="mt-3 max-w-[180px] sm:max-w-[200px] truncate rounded-full bg-accent/60 px-3 py-1 text-[11px] text-accent-foreground font-medium">
-                        🎯 {selectedTask.title}
-                      </div>
-                    )}
-                    {mode === "break" && selectedBreakTaskTitle && (
-                      <div className="mt-3 max-w-[180px] sm:max-w-[200px] truncate rounded-full bg-accent/60 px-3 py-1 text-[11px] text-accent-foreground font-medium">
-                        {selectedBreakTaskTitle}
-                      </div>
-                    )}
-                  </div>
+              {activeTask?.firstAction && (
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-primary">
+                  <span className="font-semibold">First Action:</span> {activeTask.firstAction}
                 </div>
+              )}
+            </div>
 
-                <div className="mt-6 flex items-center justify-center gap-3 w-full max-w-xs">
-                  {status === "running" ? (
-                    <Button
-                      size="lg"
-                      variant="secondary"
-                      className="flex-1 gap-2 rounded-xl shadow-md"
-                      onClick={handlePause}
-                    >
-                      <Pause className="h-4 w-4" />
-                      Pause
-                    </Button>
-                  ) : (
-                    <Button
-                      size="lg"
-                      className="flex-1 gap-2 rounded-xl shadow-md shadow-primary/20"
-                      onClick={handleStart}
-                    >
-                      <Play className="h-4 w-4" />
-                      {status === "paused" ? "Resume" : "Start Focus"}
-                    </Button>
-                  )}
-                  <Button
-                    size="lg"
-                    variant="outline"
-                    className="rounded-xl px-4"
-                    onClick={handleReset}
-                    title="Reset timer"
-                    aria-label="Reset timer"
+            {/* Work Grades Selector */}
+            <div className="rounded-2xl border border-border bg-card p-6 shadow-sm space-y-3">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Select Work Grade</h2>
+              <div className="space-y-2">
+                {workGrades.map((g) => (
+                  <button
+                    key={g.grade}
+                    type="button"
+                    onClick={() => handleSelectGrade(g.grade)}
+                    className={`flex w-full items-start justify-between rounded-xl border p-3 text-left transition-colors ${
+                      selectedGrade === g.grade
+                        ? "border-primary bg-primary/10 shadow-sm"
+                        : "border-border hover:bg-accent/40"
+                    }`}
                   >
-                    <RotateCcw className="h-4 w-4" />
+                    <div>
+                      <p className="text-xs font-bold text-foreground">{g.label}</p>
+                      <p className="text-[11px] text-muted-foreground">{g.desc}</p>
+                    </div>
+                    <span className="text-xs font-semibold text-primary">{g.defaultMin}m</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Recent Focus History */}
+        <section className="space-y-3">
+          <h2 className="text-base font-bold text-foreground">Recent Focus Sessions ({focusSessions.length})</h2>
+          {focusSessions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No recorded sessions yet. Start your first session above.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
+              {focusSessions.slice(0, 6).map((f) => (
+                <div key={f.id} className="rounded-xl border border-border bg-card p-3 text-xs">
+                  <div className="flex items-center justify-between font-semibold text-foreground">
+                    <span className="truncate">{f.taskTitle}</span>
+                    <Badge variant={f.status === "completed" ? "default" : "outline"} className="text-[10px]">
+                      {f.actualDuration}m
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    Grade {f.workGrade} · {f.actualDifficulty ? `Diff: ${f.actualDifficulty}/10` : "Unrated"}
+                  </p>
+                  {f.reflection && <p className="mt-1 italic text-muted-foreground">"{f.reflection}"</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      {/* Session Completion & Review Modal */}
+      {showReviewModal && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+            <h2 className="text-lg font-bold text-foreground">Focus Session Review</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Reflect on how this session went to calibrate your personal working capacity.
+            </p>
+
+            <div className="mt-4 space-y-4">
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground">
+                  Actual Difficulty ({actualDifficulty}/10)
+                </label>
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  value={actualDifficulty}
+                  onChange={(e) => setActualDifficulty(Number(e.target.value))}
+                  className="mt-2 w-full"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground">
+                  Interruption Reason (if stopped early)
+                </label>
+                <Input
+                  placeholder="e.g. Call, fatigue, finished task early..."
+                  value={interruptionReason}
+                  onChange={(e) => setInterruptionReason(e.target.value)}
+                  className="mt-1 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground">
+                  Session Reflection (Optional)
+                </label>
+                <Input
+                  placeholder="What helped or hindered your focus?"
+                  value={sessionReflection}
+                  onChange={(e) => setSessionReflection(e.target.value)}
+                  className="mt-1 text-sm"
+                />
+              </div>
+
+              {/* Extension Options */}
+              <div className="border-t border-border pt-3">
+                <p className="text-xs font-semibold uppercase text-muted-foreground">Would you like to continue?</p>
+                <div className="mt-2 flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => handleExtend(5)}>
+                    +5 Minutes
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => handleExtend(10)}>
+                    +10 Minutes
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => handleStartBreak(5)}>
+                    Take 5m Break
                   </Button>
                 </div>
+              </div>
+            </div>
 
-                {error && (
-                  <div
-                    role="alert"
-                    className="mt-5 w-full max-w-md rounded-xl border border-red-500/30 bg-red-500/10 p-3.5 text-center text-xs sm:text-sm font-medium text-red-700 dark:text-red-300 animate-in fade-in"
-                  >
-                    {error}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="border-border/70 shadow-sm">
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base sm:text-lg">
-                  <CheckCircle2 className="h-5 w-5 text-primary" />
-                  {mode === "work" ? "Required: Select your daily task" : "Select a break task"}
-                </CardTitle>
-                <CardDescription className="text-xs sm:text-sm">
-                  {mode === "work"
-                    ? "Before the timer starts, specify what work you will complete from your daily tasks."
-                    : "Select a light action from under 5 min tasks or Eisenhower Q2/Q3/Q4 to refresh your mind."}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {mode === "work" ? (
-                  <div>
-                    <label htmlFor="daily-task-select" className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-                      Daily Tasks Available ({dailyTasks.length})
-                    </label>
-                    <select
-                      id="daily-task-select"
-                      className="h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-                      value={selectedTaskId}
-                      disabled={status === "running"}
-                      onChange={(e) => {
-                        setSelectedTaskId(e.target.value);
-                        setError("");
-                      }}
-                    >
-                      <option value="">-- Choose what you are going to do --</option>
-                      {dailyTasks.length > 0 ? (
-                        dailyTasks.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.icon} {t.title} ({t.expectedDuration}m · {t.priority} priority)
-                          </option>
-                        ))
-                      ) : (
-                        <option value="" disabled>
-                          No active daily tasks found. Add tasks in Today/Tasks first!
-                        </option>
-                      )}
-                    </select>
-
-                    {selectedTask && (
-                      <div className="mt-3 rounded-xl border border-border/70 bg-muted/40 p-3.5 text-xs sm:text-sm space-y-1">
-                        <p className="font-semibold text-foreground flex items-center gap-1.5">
-                          <span>{selectedTask.icon}</span> {selectedTask.title}
-                        </p>
-                        <p className="text-muted-foreground">
-                          <span className="font-medium text-foreground">Scope:</span> {selectedTask.scope}
-                        </p>
-                        {selectedTask.firstAction && (
-                          <p className="text-muted-foreground">
-                            <span className="font-medium text-foreground">First action:</span>{" "}
-                            {selectedTask.firstAction}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div>
-                    <label htmlFor="break-task-select" className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-                      Choose Break Task
-                    </label>
-                    <select
-                      id="break-task-select"
-                      className="h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-                      value={selectedBreakOption}
-                      disabled={status === "running"}
-                      onChange={(e) => {
-                        setSelectedBreakOption(e.target.value);
-                        setError("");
-                      }}
-                    >
-                      <option value="">-- Choose a break task --</option>
-                      {activeQuickTasks.length > 0 && (
-                        <optgroup label="⚡ Under 5 Min Tasks">
-                          {activeQuickTasks.map((q) => (
-                            <option key={q.id} value={`quick:${q.id}`}>
-                              {q.title}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {eisenhowerBreakTasks.length > 0 && (
-                        <optgroup label="📋 Eisenhower Matrix (Q2, Q3, Q4)">
-                          {eisenhowerBreakTasks.map((t) => (
-                            <option key={t.id} value={`task:${t.id}`}>
-                              {t.title} · {getTaskQuadrant(t).toUpperCase()} ({t.expectedDuration} min)
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </select>
-                    {selectedBreakTaskTitle && (
-                      <div className="mt-3 rounded-xl border border-border/70 bg-muted/40 p-3 text-xs sm:text-sm text-foreground">
-                        Selected for break: <span className="font-semibold">{selectedBreakTaskTitle}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          <div className="space-y-6">
-            <Card className="border-border/70 shadow-sm">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base sm:text-lg flex items-center justify-between">
-                  <span className="flex items-center gap-2">
-                    <Settings2 className="h-4 w-4 text-primary" />
-                    Customise Timer
-                  </span>
-                  <Badge variant="outline" className="text-xs font-normal">
-                    {mode === "work" ? `${durationMinutes}m focus` : `${breakMinutes}m break`}
-                  </Badge>
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  Pick a preset or enter exact minutes.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                    Work Presets
-                  </p>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {WORK_PRESETS.map((preset) => (
-                      <Button
-                        key={preset}
-                        size="sm"
-                        variant={durationMinutes === preset ? "default" : "outline"}
-                        className="h-8 text-xs font-medium rounded-lg"
-                        disabled={status !== "idle"}
-                        onClick={() => handleApplyCustomWork(preset)}
-                      >
-                        {preset}m
-                      </Button>
-                    ))}
-                  </div>
-                  <div className="mt-2.5 flex items-center gap-2">
-                    <label htmlFor="custom-work-minutes" className="text-xs text-muted-foreground whitespace-nowrap">Custom work:</label>
-                    <input
-                      id="custom-work-minutes"
-                      type="number"
-                      min={1}
-                      max={180}
-                      value={customWorkInput}
-                      disabled={status !== "idle"}
-                      onChange={(e) => {
-                        setCustomWorkInput(e.target.value);
-                        handleApplyCustomWork(Number(e.target.value));
-                      }}
-                      className="h-8 w-20 rounded-lg border border-border bg-background px-2 text-xs font-medium text-center focus:ring-1 focus:ring-primary"
-                    />
-                    <span className="text-xs text-muted-foreground">min</span>
-                  </div>
-                </div>
-
-                <div className="border-t border-border/60 pt-3">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                    Break Presets
-                  </p>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {BREAK_PRESETS.map((preset) => (
-                      <Button
-                        key={preset}
-                        size="sm"
-                        variant={breakMinutes === preset ? "secondary" : "outline"}
-                        className="h-8 text-xs font-medium rounded-lg"
-                        disabled={status !== "idle"}
-                        onClick={() => handleApplyCustomBreak(preset)}
-                      >
-                        {preset}m
-                      </Button>
-                    ))}
-                  </div>
-                  <div className="mt-2.5 flex items-center gap-2">
-                    <label htmlFor="custom-break-minutes" className="text-xs text-muted-foreground whitespace-nowrap">Custom break:</label>
-                    <input
-                      id="custom-break-minutes"
-                      type="number"
-                      min={1}
-                      max={60}
-                      value={customBreakInput}
-                      disabled={status !== "idle"}
-                      onChange={(e) => {
-                        setCustomBreakInput(e.target.value);
-                        handleApplyCustomBreak(Number(e.target.value));
-                      }}
-                      className="h-8 w-20 rounded-lg border border-border bg-background px-2 text-xs font-medium text-center focus:ring-1 focus:ring-primary"
-                    />
-                    <span className="text-xs text-muted-foreground">min</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-border/70 shadow-sm">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base sm:text-lg flex items-center justify-between">
-                  <span className="flex items-center gap-2">
-                    <History className="h-4 w-4 text-primary" />
-                    Previous Sessions
-                  </span>
-                  <Badge variant="secondary" className="text-xs font-normal">
-                    {sessions.length} logged
-                  </Badge>
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  Auto-recorded work sessions with date & timestamps. Breaks are not recorded.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                  {recentSessions.length > 0 ? (
-                    recentSessions.map((s) => (
-                      <div
-                        key={s.id}
-                        className="rounded-xl border border-border/70 bg-card/60 p-3 text-xs space-y-1 hover:border-primary/40 transition-colors"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="font-semibold text-foreground truncate">{s.taskTitle}</p>
-                          <Badge variant="outline" className="text-[10px] shrink-0 font-mono">
-                            {s.durationMinutes} min
-                          </Badge>
-                        </div>
-                        <div className="flex items-center justify-between text-muted-foreground text-[11px] pt-0.5">
-                          <span>{formatSessionDate(s.startedAt)}</span>
-                          <span className="flex items-center gap-1 font-mono">
-                            <Clock3 className="h-3 w-3" />
-                            {formatClockTime(s.startedAt)} – {formatClockTime(s.endedAt)}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="py-8 text-center text-xs text-muted-foreground">
-                      No completed focus sessions yet. Finish a timer to log your first session!
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+            <div className="mt-6 flex justify-end gap-2.5">
+              <Button onClick={handleSaveReview} className="gap-2">
+                <CheckCircle2 className="h-4 w-4" />
+                Record Session
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

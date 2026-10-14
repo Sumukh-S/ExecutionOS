@@ -1,198 +1,388 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
-import { AlarmClock, ChevronDown, X } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { Priority, TaskRecord } from "@/contexts/execution-data";
+import { Input } from "@/components/ui/input";
+import { ChevronDown, ChevronUp, Bell, Sparkles, X } from "lucide-react";
+import type { MasterTask, Priority } from "@/types/execution-os";
+import { useExecutionData } from "@/contexts/execution-data";
+import { useNotificationPermission } from "@/lib/notifications";
 
-export type TaskFormValues = {
+type TaskFormValues = {
   title: string;
-  scope: string;
+  expectedOutcome: string;
   firstAction: string;
-  outcome: string;
   priority: Priority;
   predictedDifficulty: number;
-  scheduledStart: string;
   expectedDuration: number;
+  scheduledDate: string;
+  scheduledTime: string;
   deadline: string;
-  location: string;
-  alarm: boolean;
-  wish: string;
-  obstacle: string;
+  hasAlarm: boolean;
+  alarmTime: string;
+  alarmSetConfirmed: boolean;
+  description: string;
   notes: string;
-  resources: string;
-  listName: string;
-  icon: string;
-  isMain?: boolean;
-  parentId?: string | null;
-  weeklyGoal?: string;
-  monthlyGoal?: string;
+  goalId: string;
+  progress: number;
+  wish: string;
+  outcome: string;
+  obstacle: string;
+  plan: string;
 };
 
-const inputClass = "mt-1 h-10 w-full rounded-md border border-border bg-background px-3 text-sm";
-
-function toLocalInput(value?: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function toIso(value: string) {
-  return value ? new Date(value).toISOString() : "";
-}
-
-function addMinutes(value: string, minutes: number) {
-  if (!value || !minutes) return "";
-  const date = new Date(value);
-  date.setMinutes(date.getMinutes() + minutes);
-  return date.toISOString();
-}
-
-export function taskToFormValues(task?: TaskRecord | null, defaults?: Partial<TaskFormValues>): TaskFormValues {
-  return {
-    title: task?.title ?? defaults?.title ?? "",
-    scope: task?.scope ?? defaults?.scope ?? "",
-    firstAction: task?.firstAction ?? defaults?.firstAction ?? "",
-    outcome: task?.outcome ?? defaults?.outcome ?? "",
-    priority: task?.priority ?? defaults?.priority ?? "medium",
-    predictedDifficulty: task?.predictedDifficulty ?? defaults?.predictedDifficulty ?? 7,
-    scheduledStart: toLocalInput(task?.scheduledStart) || defaults?.scheduledStart || "",
-    expectedDuration: task?.expectedDuration ?? defaults?.expectedDuration ?? 30,
-    deadline: toLocalInput(task?.deadline) || defaults?.deadline || "",
-    location: task?.location ?? defaults?.location ?? "",
-    alarm: task?.alarm ?? defaults?.alarm ?? false,
-    wish: task?.wish ?? defaults?.wish ?? "",
-    obstacle: task?.obstacle ?? defaults?.obstacle ?? "",
-    notes: task?.notes ?? defaults?.notes ?? "",
-    resources: task?.resources ?? defaults?.resources ?? "",
-    listName: task?.listName ?? defaults?.listName ?? "Personal",
-    icon: task?.icon ?? defaults?.icon ?? "✅",
-    isMain: task?.isMain ?? defaults?.isMain,
-    parentId: task?.parentId ?? defaults?.parentId ?? null,
-    weeklyGoal: task?.weeklyGoal ?? defaults?.weeklyGoal ?? "",
-    monthlyGoal: task?.monthlyGoal ?? defaults?.monthlyGoal ?? "",
-  };
-}
-
-export function formValuesToTaskPayload(values: TaskFormValues) {
-  const scheduledStart = toIso(values.scheduledStart);
-  const scheduledEnd = values.scheduledStart && values.expectedDuration ? addMinutes(values.scheduledStart, values.expectedDuration) : "";
-  return {
-    title: values.title.trim(),
-    description: values.scope,
-    scope: values.scope,
-    firstAction: values.firstAction,
-    outcome: values.outcome,
-    priority: values.priority,
-    predictedDifficulty: Number(values.predictedDifficulty),
-    scheduledStart,
-    scheduledEnd,
-    plannedEnd: scheduledEnd,
-    expectedDuration: Number(values.expectedDuration) || 0,
-    deadline: toIso(values.deadline),
-    location: values.location,
-    alarm: values.alarm,
-    wish: values.wish,
-    obstacle: values.obstacle,
-    notes: values.notes,
-    resources: values.resources,
-    listName: values.listName || "Personal",
-    icon: values.icon || "✅",
-    isMain: values.isMain,
-    parentId: values.parentId ?? null,
-    weeklyGoal: values.weeklyGoal ?? "",
-    monthlyGoal: values.monthlyGoal ?? "",
-  };
-}
-
 export function TaskFormDialog({
-  title,
-  description,
-  initialValues,
-  todayOnly = false,
-  submitLabel = "Save task",
-  onSubmit,
+  isOpen,
   onClose,
+  initialTask,
+  initialDate,
+  onSubmit,
 }: {
-  title: string;
-  description: string;
-  initialValues: TaskFormValues;
-  todayOnly?: boolean;
-  submitLabel?: string;
-  onSubmit: (values: TaskFormValues) => string | void;
+  isOpen: boolean;
   onClose: () => void;
+  initialTask?: MasterTask | null;
+  initialDate?: string;
+  onSubmit: (values: Partial<MasterTask>) => void;
 }) {
-  const [values, setValues] = useState<TaskFormValues>(initialValues);
-  const [showDetails, setShowDetails] = useState(false);
-  const [error, setError] = useState("");
-  const today = new Date().toISOString().slice(0, 10);
-  const plannedEnd = useMemo(() => addMinutes(values.scheduledStart, Number(values.expectedDuration)), [values.expectedDuration, values.scheduledStart]);
-  const setValue = <K extends keyof TaskFormValues>(key: K, value: TaskFormValues[K]) => setValues((current) => ({ ...current, [key]: value }));
+  const { goals } = useExecutionData();
+  const { isSupported, isGranted, requestPermission } = useNotificationPermission();
+  const [showMentalPrep, setShowMentalPrep] = useState(Boolean(initialTask?.wish || initialTask?.obstacle));
+  const [showDetails, setShowDetails] = useState(Boolean(initialTask?.description || initialTask?.notes));
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!values.title.trim() || !values.scope.trim() || !values.firstAction.trim()) {
-      setError("Add a title, scope / description, and first action before saving.");
-      return;
-    }
-    if (todayOnly && [values.scheduledStart, values.deadline].some((value) => value && !value.startsWith(today))) {
-      setError("Today only allows today's date. Use Tasks for other dates.");
-      return;
-    }
-    const result = onSubmit(values);
-    if (result) {
-      setError(result);
-      return;
-    }
+  const [form, setForm] = useState<TaskFormValues>({
+    title: initialTask?.title || "",
+    expectedOutcome: initialTask?.expectedOutcome || "",
+    firstAction: initialTask?.firstAction || "",
+    priority: initialTask?.priority || "medium",
+    predictedDifficulty: initialTask?.predictedDifficulty ?? 5,
+    expectedDuration: initialTask?.expectedDuration ?? 30,
+    scheduledDate: initialTask?.scheduledDate || initialDate || "",
+    scheduledTime: initialTask?.scheduledTime || "",
+    deadline: initialTask?.deadline ? initialTask.deadline.slice(0, 16) : "",
+    hasAlarm: initialTask?.hasAlarm ?? false,
+    alarmTime: initialTask?.alarmTime ? initialTask.alarmTime.slice(0, 16) : "",
+    alarmSetConfirmed: initialTask?.alarmSetConfirmed ?? false,
+    description: initialTask?.description || "",
+    notes: initialTask?.notes || "",
+    goalId: initialTask?.goalId || "",
+    progress: initialTask?.progress ?? 0,
+    wish: initialTask?.wish || "",
+    outcome: initialTask?.outcome || "",
+    obstacle: initialTask?.obstacle || "",
+    plan: initialTask?.plan || "",
+  });
+
+  if (!isOpen) return null;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.title.trim()) return;
+
+    onSubmit({
+      title: form.title.trim(),
+      expectedOutcome: form.expectedOutcome.trim(),
+      firstAction: form.firstAction.trim(),
+      priority: form.priority,
+      predictedDifficulty: Number(form.predictedDifficulty),
+      expectedDuration: Number(form.expectedDuration),
+      scheduledDate: form.scheduledDate || null,
+      scheduledTime: form.scheduledTime || null,
+      deadline: form.deadline ? new Date(form.deadline).toISOString() : null,
+      hasAlarm: form.hasAlarm,
+      alarmTime: form.alarmTime ? new Date(form.alarmTime).toISOString() : null,
+      alarmSetConfirmed: form.alarmSetConfirmed,
+      description: form.description.trim(),
+      notes: form.notes.trim(),
+      goalId: form.goalId || null,
+      progress: Number(form.progress),
+      wish: form.wish.trim(),
+      outcome: form.outcome.trim(),
+      obstacle: form.obstacle.trim(),
+      plan: form.plan.trim(),
+    });
     onClose();
   };
 
+  const handleToggleAlarm = async () => {
+    if (!form.hasAlarm && isSupported && !isGranted) {
+      await requestPermission();
+    }
+    setForm((prev) => ({ ...prev, hasAlarm: !prev.hasAlarm }));
+  };
+
   return (
-    <div className="fixed inset-0 z-[60] overflow-y-auto bg-black/50 p-4">
-      <form onSubmit={submit} className="mx-auto my-4 max-w-3xl rounded-xl border border-border bg-card p-5 shadow-2xl sm:p-7">
-        <div className="flex items-center justify-between gap-4">
-          <div><h2 className="text-xl font-semibold">{title}</h2><p className="text-sm text-muted-foreground">{description}</p></div>
-          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent border border-border/40" onClick={onClose} aria-label="Close task form"><X className="h-5 w-5" /></Button>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border pb-3">
+          <div>
+            <h2 className="text-lg font-bold text-foreground">
+              {initialTask ? "Edit Task" : "Create Master Task"}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {initialTask ? "Update task definition." : "Quickly capture an action. Fill only what is necessary."}
+            </p>
+          </div>
+          <Button size="icon" variant="ghost" onClick={onClose} className="h-8 w-8">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
-        {error && <p role="alert" className="mt-4 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">{error}</p>}
 
-        <section className="mt-6 space-y-4">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">A. Task Definition</h3>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="text-sm font-medium md:col-span-2">Task title<input className={inputClass} value={values.title} onChange={(event) => setValue("title", event.target.value)} required /></label>
-            <label className="text-sm font-medium">Scope / description<textarea className={`${inputClass} h-20 py-2`} value={values.scope} onChange={(event) => setValue("scope", event.target.value)} required /></label>
-            <label className="text-sm font-medium">First action<textarea className={`${inputClass} h-20 py-2`} value={values.firstAction} onChange={(event) => setValue("firstAction", event.target.value)} required /></label>
-            <label className="text-sm font-medium">Expected outcome<input className={inputClass} value={values.outcome} onChange={(event) => setValue("outcome", event.target.value)} /></label>
-            <label className="text-sm font-medium">Priority<select className={inputClass} value={values.priority} onChange={(event) => setValue("priority", event.target.value as Priority)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
-            <label className="text-sm font-medium">Predicted difficulty<input type="number" min="1" max="10" className={inputClass} value={values.predictedDifficulty} onChange={(event) => setValue("predictedDifficulty", Number(event.target.value))} required /></label>
+        <form onSubmit={handleSubmit} className="space-y-4 pt-4">
+          {/* Title */}
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Title *</label>
+            <Input
+              autoFocus
+              required
+              placeholder="What needs to be done?"
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+              className="mt-1 font-medium"
+            />
           </div>
-        </section>
 
-        <section className="mt-6 space-y-4">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">B. Scheduling</h3>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="text-sm font-medium">Start date and time<input type="datetime-local" min={todayOnly ? `${today}T00:00` : undefined} max={todayOnly ? `${today}T23:59` : undefined} className={inputClass} value={values.scheduledStart} onChange={(event) => setValue("scheduledStart", event.target.value)} /></label>
-            <label className="text-sm font-medium">Estimated duration (minutes)<input type="number" min="0" className={inputClass} value={values.expectedDuration} onChange={(event) => setValue("expectedDuration", Number(event.target.value))} /></label>
-            <div className="rounded-lg border border-border bg-background p-3 text-sm"><p className="label">Planned end time</p><p className="mt-1">{plannedEnd ? new Date(plannedEnd).toLocaleString() : "Add start + duration"}</p></div>
-            <label className="text-sm font-medium">Fixed deadline<input type="datetime-local" min={todayOnly ? `${today}T00:00` : undefined} max={todayOnly ? `${today}T23:59` : undefined} className={inputClass} value={values.deadline} onChange={(event) => setValue("deadline", event.target.value)} /></label>
-            <label className="text-sm font-medium">Location<input className={inputClass} value={values.location} onChange={(event) => setValue("location", event.target.value)} /></label>
-            <label className="flex items-center gap-2 self-end rounded-md border border-border p-3 text-sm font-medium"><input type="checkbox" checked={values.alarm} onChange={(event) => setValue("alarm", event.target.checked)} /><AlarmClock className="h-4 w-4 text-primary" />Reminder / alarm</label>
+          {/* First Action & Expected Outcome */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">First Action</label>
+              <Input
+                placeholder="Immediate microscopic step..."
+                value={form.firstAction}
+                onChange={(e) => setForm({ ...form, firstAction: e.target.value })}
+                className="mt-1 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Expected Outcome</label>
+              <Input
+                placeholder="Clear finished result..."
+                value={form.expectedOutcome}
+                onChange={(e) => setForm({ ...form, expectedOutcome: e.target.value })}
+                className="mt-1 text-sm"
+              />
+            </div>
           </div>
-        </section>
 
-        <section className="mt-6 rounded-xl border border-border">
-          <button type="button" className="flex w-full items-center justify-between p-4 text-sm font-semibold" onClick={() => setShowDetails((open) => !open)}>C. Additional Details <ChevronDown className={`h-4 w-4 transition-transform ${showDetails ? "rotate-180" : ""}`} /></button>
-          {showDetails && <div className="grid gap-4 border-t border-border p-4 md:grid-cols-2">
-            <label className="text-sm font-medium">Why / motivation<textarea className={`${inputClass} h-20 py-2`} value={values.wish} onChange={(event) => setValue("wish", event.target.value)} /></label>
-            <label className="text-sm font-medium">Likely obstacles<textarea className={`${inputClass} h-20 py-2`} value={values.obstacle} onChange={(event) => setValue("obstacle", event.target.value)} /></label>
-            <label className="text-sm font-medium">Notes<textarea className={`${inputClass} h-20 py-2`} value={values.notes} onChange={(event) => setValue("notes", event.target.value)} /></label>
-            <label className="text-sm font-medium">Links / resources<input className={inputClass} value={values.resources} onChange={(event) => setValue("resources", event.target.value)} /></label>
-          </div>}
-        </section>
+          {/* Priority & Predicted Difficulty (1-10) & Duration */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Priority</label>
+              <select
+                value={form.priority}
+                onChange={(e) => setForm({ ...form, priority: e.target.value as Priority })}
+                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
+            </div>
 
-        <div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={onClose}>Cancel</Button><Button type="submit">{submitLabel}</Button></div>
-      </form>
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Difficulty: {form.predictedDifficulty}/10
+              </label>
+              <input
+                type="range"
+                min="1"
+                max="10"
+                value={form.predictedDifficulty}
+                onChange={(e) => setForm({ ...form, predictedDifficulty: Number(e.target.value) })}
+                className="mt-3 w-full"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Est. Duration (min)</label>
+              <Input
+                type="number"
+                min="1"
+                max="480"
+                value={form.expectedDuration}
+                onChange={(e) => setForm({ ...form, expectedDuration: Number(e.target.value) })}
+                className="mt-1 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Scheduling & Deadlines */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Scheduled Date</label>
+              <Input
+                type="date"
+                value={form.scheduledDate}
+                onChange={(e) => setForm({ ...form, scheduledDate: e.target.value })}
+                className="mt-1 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Scheduled Time</label>
+              <Input
+                type="time"
+                value={form.scheduledTime}
+                onChange={(e) => setForm({ ...form, scheduledTime: e.target.value })}
+                className="mt-1 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Exact Deadline</label>
+              <Input
+                type="datetime-local"
+                value={form.deadline}
+                onChange={(e) => setForm({ ...form, deadline: e.target.value })}
+                className="mt-1 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Alarm / Reminder Toggle */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3 text-sm">
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-primary" />
+              <span>Did you set an alarm / reminder?</span>
+            </div>
+            <Button
+              type="button"
+              variant={form.hasAlarm ? "default" : "outline"}
+              size="sm"
+              onClick={handleToggleAlarm}
+            >
+              {form.hasAlarm ? "Alarm Enabled" : "Enable Alarm"}
+            </Button>
+          </div>
+
+          {/* Goal Association */}
+          {goals.length > 0 && (
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Associated Goal (Optional)</label>
+              <select
+                value={form.goalId}
+                onChange={(e) => setForm({ ...form, goalId: e.target.value })}
+                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">No goal linked</option>
+                {goals.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Mental Preparation Accordion */}
+          <div className="rounded-lg border border-border">
+            <button
+              type="button"
+              onClick={() => setShowMentalPrep((v) => !v)}
+              className="flex w-full items-center justify-between p-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:bg-accent/40"
+            >
+              <span className="flex items-center gap-2">
+                <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                Mental Preparation (WOOP / MCII)
+              </span>
+              {showMentalPrep ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+
+            {showMentalPrep && (
+              <div className="space-y-3 border-t border-border p-3">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div>
+                    <label className="text-xs text-muted-foreground">Wish (What do I want?)</label>
+                    <Input
+                      placeholder="e.g. Finish DSA chapter comfortably"
+                      value={form.wish}
+                      onChange={(e) => setForm({ ...form, wish: e.target.value })}
+                      className="mt-1 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">Outcome (Best positive result)</label>
+                    <Input
+                      placeholder="e.g. Confident with binary search"
+                      value={form.outcome}
+                      onChange={(e) => setForm({ ...form, outcome: e.target.value })}
+                      className="mt-1 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div>
+                    <label className="text-xs text-muted-foreground">Obstacle (What will distract me?)</label>
+                    <Input
+                      placeholder="e.g. Phone scrolling when stuck"
+                      value={form.obstacle}
+                      onChange={(e) => setForm({ ...form, obstacle: e.target.value })}
+                      className="mt-1 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">If-Then Plan (Counter-action)</label>
+                    <Input
+                      placeholder="e.g. If stuck, review notes for 2 min"
+                      value={form.plan}
+                      onChange={(e) => setForm({ ...form, plan: e.target.value })}
+                      className="mt-1 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Details & Notes Accordion */}
+          <div className="rounded-lg border border-border">
+            <button
+              type="button"
+              onClick={() => setShowDetails((v) => !v)}
+              className="flex w-full items-center justify-between p-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:bg-accent/40"
+            >
+              <span>Description & Notes</span>
+              {showDetails ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+
+            {showDetails && (
+              <div className="space-y-3 border-t border-border p-3">
+                <div>
+                  <label className="text-xs text-muted-foreground">Description</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Details regarding context and materials..."
+                    value={form.description}
+                    onChange={(e) => setForm({ ...form, description: e.target.value })}
+                    className="mt-1 flex w-full rounded-md border border-input bg-background p-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Personal Notes</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Any specific instructions, links, or references..."
+                    value={form.notes}
+                    onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                    className="mt-1 flex w-full rounded-md border border-input bg-background p-2 text-sm"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit">
+              {initialTask ? "Save Changes" : "Create Task"}
+            </Button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

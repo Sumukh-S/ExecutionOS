@@ -1,133 +1,244 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { Calendar, Plus, Target, Trash2, Pencil } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Plus, Target, CheckCircle2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PlanAddDialog } from "@/components/plan-add-dialog";
-import { useExecutionData, type GoalRecord } from "@/contexts/execution-data";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { useExecutionData } from "@/contexts/execution-data";
+import type { Goal } from "@/types/execution-os";
 
 export default function GoalsPage() {
-  const { goals, addGoal, updateGoal, deleteGoal, updateGoalProgress } = useExecutionData();
-  const [dialogType, setDialogType] = useState<"weekly" | "monthly" | "longterm" | null>(null);
-  const [editingGoal, setEditingGoal] = useState<GoalRecord | null>(null);
-  const [goalTitle, setGoalTitle] = useState("");
-  const [goalTarget, setGoalTarget] = useState("");
-  const [progressGoalId, setProgressGoalId] = useState<string | null>(null);
-  const [progressValue, setProgressValue] = useState("");
-  const types = ["longterm", "monthly", "weekly"] as const;
+  const { goals, createGoal, updateGoal, deleteGoal, masterTasks } = useExecutionData();
+  const [showModal, setShowModal] = useState(false);
+  const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
 
-  const handleEditGoalSubmit = (e: FormEvent) => {
+  const [title, setTitle] = useState("");
+  const [desiredOutcome, setDesiredOutcome] = useState("");
+  const [targetValue, setTargetValue] = useState("");
+  const [currentProgress, setCurrentProgress] = useState(0);
+  const [deadline, setDeadline] = useState("");
+  const [whyItMatters, setWhyItMatters] = useState("");
+  const [nextSteps, setNextSteps] = useState("");
+
+  const activeGoals = useMemo(() => goals.filter((g) => g.status === "active"), [goals]);
+
+  const handleSaveGoal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingGoal || !goalTitle.trim() || !goalTarget.trim()) return;
-    updateGoal(editingGoal.id, { title: goalTitle.trim(), target: goalTarget.trim() });
-    setEditingGoal(null);
+    if (!title.trim()) return;
+
+    if (editingGoal) {
+      await updateGoal(editingGoal.id, {
+        title: title.trim(),
+        desiredOutcome: desiredOutcome.trim(),
+        targetValue: targetValue.trim(),
+        currentProgress: Number(currentProgress),
+        deadline: deadline || null,
+        whyItMatters: whyItMatters.trim(),
+        nextSteps: nextSteps.trim(),
+      });
+      setEditingGoal(null);
+    } else {
+      await createGoal({
+        title: title.trim(),
+        desiredOutcome: desiredOutcome.trim(),
+        targetValue: targetValue.trim(),
+        currentProgress: Number(currentProgress),
+        deadline: deadline || null,
+        whyItMatters: whyItMatters.trim(),
+        nextSteps: nextSteps.trim(),
+        status: "active",
+      });
+    }
+
+    setTitle("");
+    setDesiredOutcome("");
+    setTargetValue("");
+    setCurrentProgress(0);
+    setDeadline("");
+    setWhyItMatters("");
+    setNextSteps("");
+    setShowModal(false);
   };
 
   return (
-    <div className="min-h-screen p-4 pb-24 sm:p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="min-h-screen p-4 pb-28 sm:p-6 lg:p-8">
+      <div className="mx-auto max-w-5xl space-y-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-sm font-medium text-primary">Direction into action</p>
-            <h1 className="text-3xl font-bold tracking-tight">Goals</h1>
-            <p className="mt-1 text-muted-foreground">Create and manage your long-term, monthly, and weekly goals.</p>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Goals</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Clear, specific, and measurable outcomes linked to daily execution.
+            </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => setDialogType("longterm")}><Plus className="mr-2 h-4 w-4" />Long-term goal</Button>
-            <Button onClick={() => setDialogType("monthly")}><Plus className="mr-2 h-4 w-4" />New goal</Button>
-          </div>
+
+          <Button onClick={() => setShowModal(true)} className="gap-2">
+            <Plus className="h-4 w-4" />
+            Add Goal
+          </Button>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-3">
-          {types.map((type) => (
-            <Card key={type}>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Target className="h-4 w-4 text-primary" />
-                  {type === "longterm" ? "Long-term" : type[0].toUpperCase() + type.slice(1)} goals
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {goals.filter((goal) => goal.type === type).map((goal) => {
-                  const percent = Math.min(100, Math.max(0, goal.progress));
-                  return (
-                    <div key={goal.id} className="rounded-lg border border-border p-3 space-y-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="font-medium text-sm">{goal.title}</p>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <Button size="icon" variant="ghost" className="h-7 w-7 rounded-md" onClick={() => { setProgressGoalId(goal.id); setProgressValue(String(goal.progress)); }} title="Update progress percentage">
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button size="icon" variant="ghost" className="h-7 w-7 rounded-md text-destructive hover:bg-destructive/10" onClick={() => deleteGoal(goal.id)} title="Delete goal">
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Target: {goal.target}</span>
-                        <span className="font-semibold">{goal.progress}%</span>
-                      </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-muted">
-                        <div className="h-full bg-primary transition-all duration-300" style={{ width: `${percent}%` }} />
-                      </div>
-                      <div className="flex justify-end pt-1">
-                        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setEditingGoal(goal); setGoalTitle(goal.title); setGoalTarget(goal.target); }}>
-                          Edit definition
-                        </Button>
-                      </div>
+        {/* Active Goals Grid */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {activeGoals.length === 0 ? (
+            <p className="py-8 text-center text-xs italic text-muted-foreground col-span-2">
+              No active goals defined. Add a specific outcome above.
+            </p>
+          ) : (
+            activeGoals.map((goal) => {
+              const linkedTasks = masterTasks.filter((t) => t.goalId === goal.id && !t.deletedAt);
+              return (
+                <div key={goal.id} className="flex flex-col justify-between rounded-2xl border border-border bg-card p-6 shadow-sm">
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-base font-bold text-foreground">{goal.title}</h3>
+                      {goal.deadline && (
+                        <span className="text-[11px] text-muted-foreground">Deadline: {goal.deadline}</span>
+                      )}
                     </div>
-                  );
-                })}
-                {goals.filter((goal) => goal.type === type).length === 0 && (
-                  <p className="py-6 text-center text-xs text-muted-foreground">No {type} goals yet.</p>
-                )}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Calendar className="h-5 w-5 text-primary" />Goal hierarchy</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">Long-term direction → monthly goal → weekly goal → specific task.</p>
-          </CardContent>
-        </Card>
+                    {goal.desiredOutcome && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        <strong className="text-foreground">Outcome:</strong> {goal.desiredOutcome}
+                      </p>
+                    )}
+
+                    {goal.targetValue && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        <strong className="text-foreground">Target:</strong> {goal.targetValue}
+                      </p>
+                    )}
+
+                    {goal.whyItMatters && (
+                      <p className="mt-2 text-xs italic text-primary/80">
+                        "{goal.whyItMatters}"
+                      </p>
+                    )}
+
+                    {/* Progress Slider */}
+                    <div className="mt-4">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                        <span>Progress</span>
+                        <span className="font-semibold text-foreground">{goal.currentProgress}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={goal.currentProgress}
+                        onChange={(e) => updateGoal(goal.id, { currentProgress: Number(e.target.value) })}
+                        className="w-full"
+                      />
+                    </div>
+
+                    {/* Linked Tasks Count */}
+                    <div className="mt-4 rounded-lg border border-border bg-background p-2.5 text-xs text-muted-foreground">
+                      <span className="font-semibold text-foreground">{linkedTasks.length}</span> linked master tasks (
+                      {linkedTasks.filter((t) => t.status === "done").length} done)
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex items-center justify-end gap-2 border-t border-border pt-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => updateGoal(goal.id, { status: "completed" })}
+                      className="gap-1.5 text-xs"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                      Mark Completed
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                      onClick={() => deleteGoal(goal.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
 
-      {dialogType && (
-        <PlanAddDialog
-          kind="goal"
-          goalType={dialogType}
-          onClose={() => setDialogType(null)}
-          onGoal={(goal) => {
-            addGoal(goal);
-            setDialogType(null);
-          }}
-        />
-      )}
+      {/* Add / Edit Goal Modal */}
+      {showModal && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+            <h2 className="text-lg font-bold text-foreground">Create Goal</h2>
+            <form onSubmit={handleSaveGoal} className="mt-4 space-y-3">
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground">Title *</label>
+                <Input
+                  required
+                  placeholder="e.g. Complete 100 DSA Problems"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
 
-      {progressGoalId && (
-        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-4">
-          <form onSubmit={(e) => { e.preventDefault(); const val = Number(progressValue); if (!Number.isNaN(val)) updateGoalProgress(progressGoalId, Math.max(0, Math.min(100, val))); setProgressGoalId(null); }} className="w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold">Update progress (%)</h2>
-            <p className="text-xs text-muted-foreground mt-1">Enter percentage number (0 - 100).</p>
-            <label className="mt-4 block text-sm font-medium">Progress percentage<input type="number" min="0" max="100" className="mt-2 h-10 w-full rounded-md border border-border bg-background px-3" value={progressValue} onChange={(e) => setProgressValue(e.target.value)} required /></label>
-            <div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setProgressGoalId(null)}>Cancel</Button><Button type="submit">Save progress</Button></div>
-          </form>
-        </div>
-      )}
+              <div>
+                <label className="text-xs text-muted-foreground">Desired Outcome</label>
+                <Input
+                  placeholder="e.g. Fluent with dynamic programming and trees"
+                  value={desiredOutcome}
+                  onChange={(e) => setDesiredOutcome(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
 
-      {editingGoal && (
-        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-4">
-          <form onSubmit={handleEditGoalSubmit} className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl space-y-4">
-            <h2 className="text-lg font-semibold">Edit goal</h2>
-            <label className="block text-sm font-medium">Goal title<input className="mt-1 h-10 w-full rounded-md border border-border bg-background px-3" value={goalTitle} onChange={(e) => setGoalTitle(e.target.value)} required /></label>
-            <label className="block text-sm font-medium">Target metric / deadline<input className="mt-1 h-10 w-full rounded-md border border-border bg-background px-3" value={goalTarget} onChange={(e) => setGoalTarget(e.target.value)} required placeholder="e.g. 100% or Target date" /></label>
-            <div className="flex justify-end gap-2 pt-2"><Button type="button" variant="ghost" onClick={() => setEditingGoal(null)}>Cancel</Button><Button type="submit">Save changes</Button></div>
-          </form>
+              <div>
+                <label className="text-xs text-muted-foreground">Target Metric Value</label>
+                <Input
+                  placeholder="e.g. 100 problems"
+                  value={targetValue}
+                  onChange={(e) => setTargetValue(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground">Deadline (Optional)</label>
+                <Input
+                  type="date"
+                  value={deadline}
+                  onChange={(e) => setDeadline(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground">Why It Matters</label>
+                <Input
+                  placeholder="Internal motivation..."
+                  value={whyItMatters}
+                  onChange={(e) => setWhyItMatters(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground">Next Actionable Steps</label>
+                <Input
+                  placeholder="First set of actions..."
+                  value={nextSteps}
+                  onChange={(e) => setNextSteps(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+
+              <div className="mt-6 flex justify-end gap-2.5">
+                <Button type="button" variant="outline" onClick={() => setShowModal(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit">Save Goal</Button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

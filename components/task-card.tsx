@@ -1,195 +1,220 @@
 "use client";
 
-import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { useState } from "react";
+import {
+  Calendar,
+  Clock,
+  AlertCircle,
+  Pencil,
+  Trash2,
+  CheckCircle2,
+  Play,
+  RotateCcw,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Clock, Flag, Calendar, Flame, MoreVertical, Check, Trash2, Info, Pencil, Play, Pause } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { formatDateTime } from "@/lib/dates";
+import { getDeadlineCountdown } from "@/lib/date-utils";
+import type { MasterTask, Priority } from "@/types/execution-os";
 
-const priorityColors = {
-  low: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-  medium: "bg-yellow-500/20 text-yellow-300 border-yellow-500/30",
-  high: "bg-orange-500/20 text-orange-300 border-orange-500/30",
-  urgent: "bg-red-500/20 text-red-300 border-red-500/30",
+const priorityConfig: Record<Priority, { label: string; badgeClass: string }> = {
+  urgent: { label: "Urgent", badgeClass: "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400" },
+  high: { label: "High", badgeClass: "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400" },
+  medium: { label: "Medium", badgeClass: "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400" },
+  low: { label: "Low", badgeClass: "border-border bg-muted/40 text-muted-foreground" },
 };
 
-interface TaskCardProps {
-  id?: string;
-  title: string;
-  icon: string;
-  listName?: string;
-  priority: string;
-  scheduledDate?: string;
-  deadline?: string | null;
-  difficulty?: number;
-  predictedDifficulty?: number;
-  actualDifficulty?: number | null;
-  expectedDuration?: number;
-  streak?: number;
-  status?: string;
-  isMain?: boolean;
-  onViewDetails?: () => void;
-  onEdit?: () => void;
-  onComplete?: () => void;
-  onStart?: () => void;
-  onPause?: () => void;
-  onDelete?: () => void;
-  onMenu?: () => void;
-  className?: string;
-}
-
 export function TaskCard({
-  id,
-  title,
-  icon,
-  listName,
-  priority,
-  scheduledDate,
-  deadline,
-  difficulty,
-  predictedDifficulty,
-  actualDifficulty,
-  expectedDuration,
-  streak,
-  status,
-  isMain,
-  onComplete,
-  onDelete,
-  onMenu,
+  task,
   onEdit,
-  onStart,
-  onPause,
-  onViewDetails,
-  className,
-}: TaskCardProps) {
+  onDelete,
+  onComplete,
+  onStartFocus,
+  onSchedule,
+  showFullDetails = false,
+}: {
+  task: MasterTask;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  onComplete?: () => void;
+  onStartFocus?: () => void;
+  onSchedule?: () => void;
+  showFullDetails?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(showFullDetails);
+  const countdown = getDeadlineCountdown(task.deadline);
+  const priority = priorityConfig[task.priority] || priorityConfig.medium;
+
   return (
-    <Card className={cn("bg-card border-border/50 hover:border-border transition-colors", className)}>
-      <CardHeader className="pb-2 pt-4 px-4">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-xl">{icon}</span>
-            <h3 className="truncate font-medium text-sm leading-tight">{title}</h3>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {streak != null && streak > 0 && (
-              <Flame className="h-4 w-4 text-orange-500 fill-orange-500" />
-            )}
-            {deadline && (
-              <span className="flex items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-2.5 py-1 text-[11px] font-semibold text-destructive whitespace-nowrap">
-                <Clock className="h-3.5 w-3.5" />
-                Due {formatDateTime(deadline)}
+    <div
+      className={cn(
+        "group relative flex flex-col justify-between rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/40 hover:shadow-md",
+        task.status === "done" && "opacity-75 bg-muted/20"
+      )}
+    >
+      <div>
+        {/* Top Badges & Meta */}
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className={cn("rounded-md border px-2 py-0.5 text-[11px] font-semibold", priority.badgeClass)}>
+              {priority.label}
+            </span>
+            <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+              Diff: {task.predictedDifficulty}/10
+            </span>
+            {task.expectedDuration > 0 && (
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Clock className="h-3 w-3" />
+                {task.expectedDuration}m
               </span>
             )}
           </div>
-        </div>
-      </CardHeader>
-      <CardContent className="px-4 pb-2">
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          {listName && <Badge variant="outline" className="text-xs">{listName}</Badge>}
-          <Badge className={cn("text-xs border", priorityColors[priority as keyof typeof priorityColors])}>
-            <Flag className="w-3 h-3 mr-1" />
-            {priority}
-          </Badge>
-          {scheduledDate && (
-            <span className="flex items-center gap-1">
-              <Calendar className="w-3 h-3" />
-              {scheduledDate}
+
+          {/* Deadline Countdown */}
+          {countdown && (
+            <span
+              className={cn(
+                "rounded-md border px-2 py-0.5 text-[11px] font-medium",
+                countdown.isOverdue
+                  ? "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
+                  : countdown.isClose
+                  ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                  : "border-border bg-muted/30 text-muted-foreground"
+              )}
+            >
+              {countdown.label}
             </span>
           )}
         </div>
-        {(difficulty || expectedDuration) && (
-          <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
-            {(difficulty || predictedDifficulty) && <span>Predicted: {difficulty ?? predictedDifficulty}/10</span>}
-            {actualDifficulty != null && <span>Actual: {actualDifficulty}/10</span>}
-            {expectedDuration && <span>Expected: {expectedDuration} min</span>}
+
+        {/* Title */}
+        <h3
+          className={cn(
+            "mt-2 text-base font-semibold leading-snug tracking-tight text-foreground",
+            task.status === "done" && "line-through text-muted-foreground"
+          )}
+        >
+          {task.title}
+        </h3>
+
+        {/* First Action Callout */}
+        {task.firstAction && (
+          <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-2 text-xs text-primary">
+            <span className="font-semibold">First Action:</span> {task.firstAction}
           </div>
         )}
-      </CardContent>
-      <CardFooter className="px-4 pb-4 pt-0 flex justify-between">
-        <div className="flex items-center gap-2">
-          {streak != null && streak > 0 && (
-            <span className="text-xs text-orange-400">🔥 {streak}-day streak</span>
+
+        {/* Expected Outcome */}
+        {task.expectedOutcome && (
+          <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+            <span className="font-medium text-foreground">Outcome:</span> {task.expectedOutcome}
+          </p>
+        )}
+
+        {/* Optional Expanded View: WOOP & Notes */}
+        {expanded && (
+          <div className="mt-3 space-y-2 border-t border-border/80 pt-3 text-xs">
+            {task.wish && (
+              <p className="text-muted-foreground">
+                <span className="font-semibold text-foreground">Wish:</span> {task.wish}
+              </p>
+            )}
+            {task.obstacle && (
+              <p className="text-muted-foreground">
+                <span className="font-semibold text-foreground">Obstacle:</span> {task.obstacle}
+              </p>
+            )}
+            {task.plan && (
+              <p className="text-muted-foreground">
+                <span className="font-semibold text-foreground">Plan:</span> {task.plan}
+              </p>
+            )}
+            {task.notes && (
+              <p className="whitespace-pre-wrap text-muted-foreground">
+                <span className="font-semibold text-foreground">Notes:</span> {task.notes}
+              </p>
+            )}
+            {task.scheduledDate && (
+              <p className="text-muted-foreground">
+                <span className="font-semibold text-foreground">Scheduled:</span> {task.scheduledDate}{" "}
+                {task.scheduledTime || ""}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Action Bar */}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
+        <div className="flex items-center gap-1">
+          {onComplete && task.status !== "done" && (
+            <Button
+              size="sm"
+              variant="default"
+              className="h-8 gap-1.5 text-xs bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-700"
+              onClick={onComplete}
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Done
+            </Button>
+          )}
+
+          {onStartFocus && task.status !== "done" && (
+            <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={onStartFocus}>
+              <Play className="h-3.5 w-3.5 text-primary" />
+              Focus
+            </Button>
+          )}
+
+          {onSchedule && (
+            <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSchedule}>
+              <Calendar className="h-3.5 w-3.5" />
+              Schedule
+            </Button>
           )}
         </div>
-        <div className="flex gap-2">
-          {onViewDetails && (
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={onViewDetails} title="View task details" aria-label="View task details">
-              <Info className="h-4 w-4" />
-              <span className="hidden sm:inline">Details</span>
+
+        <div className="flex items-center gap-1">
+          {(task.wish || task.obstacle || task.notes) && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 text-muted-foreground"
+              onClick={() => setExpanded((v) => !v)}
+              title={expanded ? "Collapse details" : "Expand details"}
+            >
+              {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
           )}
-          {onStart && status !== "in_progress" && status !== "done" && (
-            <Button size="sm" variant="outline" className="gap-1.5 hidden" onClick={onStart} title="Start task" aria-label="Start task">
-              <Play className="h-4 w-4" />
-              <span className="hidden sm:inline">Start</span>
-            </Button>
-          )}
-          {onPause && status === "in_progress" && (
-            <Button size="sm" variant="outline" className="gap-1.5 hidden" onClick={onPause} title="Pause task" aria-label="Pause task">
-              <Pause className="h-4 w-4" />
-              <span className="hidden sm:inline">Pause</span>
-            </Button>
-          )}
+
           {onEdit && (
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={onEdit} title="Edit task" aria-label="Edit task">
-              <Pencil className="h-4 w-4" />
-              <span className="hidden sm:inline">Edit</span>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+              onClick={onEdit}
+              title="Edit task"
+            >
+              <Pencil className="h-3.5 w-3.5" />
             </Button>
           )}
-          {onMenu && (
-            <Button size="sm" variant="ghost" onClick={onMenu}>
-              <MoreVertical className="w-3 h-3" />
+
+          {onDelete && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+              onClick={onDelete}
+              title="Delete task"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
             </Button>
           )}
-          {onComplete && status !== "done" && (
-
-<Button
-  size="sm"
-  variant="ghost"
-  className="shrink-0 border border-primary/40
-             bg-primary/10 text-primary
-             transition-all duration-200
-             hover:scale-105
-             hover:border-primary
-             hover:bg-primary
-             hover:text-primary-foreground
-             hover:shadow-md
-             active:scale-95"
-  onClick={onComplete}
-  title="Complete task"
->
-  <Check className="w-3 h-3 mr-1" />
-  Done
-</Button>
-
-          )}
-
-{onDelete && (
-  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-9 w-9 shrink-0 border border-primary/40
-             bg-primary/10 text-primary
-             transition-all duration-200
-             hover:scale-105
-             hover:border-primary
-             hover:bg-primary
-             hover:text-primary-foreground
-             hover:shadow-md
-             active:scale-95"
-                    onClick={onDelete}
-                    title="Delete"
-                    aria-label="Delete task"
-                  >
-                    <Trash2 strokeWidth={2.2} className="h-5 w-5 shrink-0" />
-                  </Button>
-)}
-
-
         </div>
-      </CardFooter>
-    </Card>
+      </div>
+    </div>
   );
 }

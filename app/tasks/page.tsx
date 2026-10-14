@@ -1,187 +1,240 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Filter, ListPlus, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Plus, Search, Filter, Trash2, CalendarPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { TaskCard } from "@/components/task-card";
-import { useExecutionData, type TaskRecord } from "@/contexts/execution-data";
-import { formatWeekday } from "@/lib/dates";
-import { TaskFormDialog, formValuesToTaskPayload, taskToFormValues, type TaskFormValues } from "@/components/task-form-dialog";
-import { CompletionReviewDialog } from "@/components/completion-review-dialog";
+import { TaskFormDialog } from "@/components/task-form-dialog";
+import { useExecutionData } from "@/contexts/execution-data";
+import { getTodayDateString, getTomorrowDateString } from "@/lib/date-utils";
+import type { MasterTask, Priority } from "@/types/execution-os";
 
 export default function TasksPage() {
   const {
-    tasks,
-    sessions,
-    addTask,
-    updateTask,
-    deleteTask,
-    recordCompletion,
-    startExecution,
-    pauseExecution,
-    resumeExecution,
+    masterTasks,
+    createMasterTask,
+    updateMasterTask,
+    deleteMasterTask,
+    scheduleTaskToDate,
   } = useExecutionData();
+
   const [query, setQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState("All");
-  const [showFilters, setShowFilters] = useState(false);
-  const [dialogMode, setDialogMode] = useState<"create-main" | "create-subtask" | null>(null);
-  const [editingTask, setEditingTask] = useState<TaskRecord | null>(null);
-  const [completionTask, setCompletionTask] = useState<TaskRecord | null>(null);
-  const [successMessage, setSuccessMessage] = useState("");
-  const [detailTask, setDetailTask] = useState<TaskRecord | null>(null);
-  const [subtaskInput, setSubtaskInput] = useState<Record<string, string>>({});
+  const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [creating, setCreating] = useState(false);
+  const [editingTask, setEditingTask] = useState<MasterTask | null>(null);
+  const [deletingTask, setDeletingTask] = useState<MasterTask | null>(null);
+  const [schedulingTask, setSchedulingTask] = useState<MasterTask | null>(null);
+  const [scheduleDate, setScheduleDate] = useState(getTodayDateString());
+  const [message, setMessage] = useState("");
 
-  const mainTasks = useMemo(() => tasks.filter((task) => task.isMain && task.status !== "done"), [tasks]);
-  const subtasks = useMemo(() => tasks.filter((task) => !task.isMain), [tasks]);
-  const subtasksOf = (parentId: string) => subtasks.filter((task) => task.parentId === parentId);
-  const standaloneSubtasks = useMemo(() => subtasks.filter((task) => !task.parentId), [subtasks]);
-  const canAddMain = mainTasks.length < 2;
+  const activeTasks = useMemo(
+    () => masterTasks.filter((t) => t.status !== "done" && !t.deletedAt),
+    [masterTasks]
+  );
 
-  const addSubtask = (event: FormEvent<HTMLFormElement>, parentId: string) => {
-    event.preventDefault();
-    const value = (subtaskInput[parentId] ?? "").trim();
-    if (!value) return;
-    addTask({
-      title: value,
-      isMain: false,
-      parentId,
-      description: value,
-      scope: value,
-      firstAction: value,
-      icon: "↳",
-      listName: "Subtask",
-      priority: "medium",
-      scheduledStart: "",
-      scheduledEnd: "",
-      deadline: "",
-      location: "",
-      alarm: false,
-      notes: "",
-      resources: "",
-      predictedDifficulty: 7,
-      expectedDuration: 15,
-      wish: "",
-      outcome: "",
-      obstacle: "",
-      weeklyGoal: "",
-      monthlyGoal: "",
+  const filteredTasks = useMemo(() => {
+    return activeTasks.filter((t) => {
+      const matchesQuery =
+        !query.trim() ||
+        `${t.title} ${t.description} ${t.notes} ${t.expectedOutcome}`
+          .toLowerCase()
+          .includes(query.toLowerCase());
+
+      const matchesPriority =
+        priorityFilter === "all" || t.priority === priorityFilter;
+
+      return matchesQuery && matchesPriority;
     });
-    setSubtaskInput((current) => ({ ...current, [parentId]: "" }));
-    setSuccessMessage("Subtask added.");
+  }, [activeTasks, query, priorityFilter]);
+
+  const handleCreateTask = async (payload: Partial<MasterTask>) => {
+    await createMasterTask(payload);
+    setMessage("Task created successfully.");
+    setTimeout(() => setMessage(""), 3000);
   };
 
-  useEffect(() => {
-    const taskId = new URLSearchParams(window.location.search).get("task");
-    const linkedTask = taskId ? tasks.find((task) => task.id === taskId) : undefined;
-    if (linkedTask) setQuery(linkedTask.title);
-  }, [tasks]);
-
-  useEffect(() => {
-    if (!successMessage) return;
-    const timer = window.setTimeout(() => setSuccessMessage(""), 3000);
-    return () => window.clearTimeout(timer);
-  }, [successMessage]);
-
-  const filteredTasks = useMemo(() => tasks.filter((task) => {
-    const matchesQuery = `${task.title} ${task.description} ${task.notes}`.toLowerCase().includes(query.toLowerCase());
-    const day = formatWeekday(task.scheduledStart);
-    const matchesFilter = activeFilter === "All" || (activeFilter === "Deadlines" && Boolean(task.deadline)) || (activeFilter === "This Week" && Boolean(task.scheduledStart)) || day === activeFilter || task.scheduledStart.includes(new Date().toISOString().slice(0, 10));
-    return matchesQuery && matchesFilter;
-  }), [activeFilter, query, tasks]);
-
-  const handleCreateSubmit = (values: TaskFormValues) => {
-    const isMain = dialogMode === "create-main";
-    const payload = formValuesToTaskPayload({ ...values, isMain, parentId: null });
-    const saved = addTask(payload);
-    if (!saved) {
-      return "Maximum of 2 active main tasks reached. Complete or delete a main task before adding another.";
-    }
-    setSuccessMessage(isMain ? "Main task saved." : "Subtask saved.");
-  };
-
-  const handleEditSubmit = (values: TaskFormValues) => {
+  const handleUpdateTask = async (payload: Partial<MasterTask>) => {
     if (!editingTask) return;
-    const payload = formValuesToTaskPayload({ ...values, isMain: editingTask.isMain, parentId: editingTask.parentId });
-    updateTask(editingTask.id, payload);
-    setSuccessMessage("Task updated.");
+    await updateMasterTask(editingTask.id, payload);
+    setEditingTask(null);
+    setMessage("Task updated successfully.");
+    setTimeout(() => setMessage(""), 3000);
   };
 
-  const removeTask = (id: string) => { deleteTask(id); setSuccessMessage("Task deleted."); };
+  const handleConfirmDelete = async () => {
+    if (!deletingTask) return;
+    await deleteMasterTask(deletingTask.id);
+    setDeletingTask(null);
+    setMessage("Task permanently deleted.");
+    setTimeout(() => setMessage(""), 3000);
+  };
 
-  return <div className="min-h-screen p-4 pb-24 sm:p-6"><div className="mx-auto max-w-6xl space-y-6">
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><h1 className="text-2xl font-bold tracking-tight">Tasks</h1><p className="text-muted-foreground">{mainTasks.length} main · {subtasks.length} subtasks · {tasks.filter((task) => task.status === "done").length} done</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" className="gap-2" onClick={() => setDialogMode("create-main")} disabled={!canAddMain} title={canAddMain ? "Add a main task" : "Complete or delete a main task before adding another"}><Plus className="h-4 w-4" />Add main task</Button><Button className="gap-2" onClick={() => setDialogMode("create-subtask")}><ListPlus className="h-4 w-4" />Add subtask</Button></div></div>
-    {successMessage && <output className="fixed right-4 top-4 z-[80] flex max-w-sm items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-card px-4 py-3 text-sm text-emerald-700 shadow-2xl dark:text-emerald-300"><span>{successMessage}</span><Button variant="ghost" size="sm" onClick={() => setSuccessMessage("")}>Dismiss</Button></output>}
-    <div className="flex gap-2"><div className="relative flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input placeholder="Search title, notes, or resources" value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" /></div><Button variant="outline" size="icon" onClick={() => setShowFilters((visible) => !visible)} aria-label="Toggle task filters" title="Toggle task filters"><Filter className="h-4 w-4" /></Button></div>
-    {showFilters && <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3 text-sm"><span className="text-muted-foreground">{filteredTasks.length} of {tasks.length} tasks</span>{query && <Button variant="ghost" size="sm" onClick={() => setQuery("")}>Clear search</Button>}</div>}
-    <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Task filters">{["All", "Today", "Tomorrow", "This Week", "Deadlines"].map((filter) => <Badge key={filter} role="tab" aria-selected={filter === activeFilter} variant={filter === activeFilter ? "default" : "outline"} className="min-h-9 cursor-pointer whitespace-nowrap" onClick={() => setActiveFilter(filter)}>{filter}</Badge>)}</div>
-    <section className="space-y-3">
-      <div className="flex items-center justify-between"><h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Main tasks ({mainTasks.length}/2)</h2></div>
-      <div className="grid gap-3 md:grid-cols-2">
-        {mainTasks.map((task) => <div key={task.id} className="space-y-2 rounded-xl border-2 border-primary/40 bg-primary/5 p-3">
-          <TaskCard {...task} onViewDetails={() => setDetailTask(task)} onEdit={() => setEditingTask(task)} onStart={() => startExecution(task.id)} onPause={() => pauseExecution(task.id)} onComplete={() => setCompletionTask(task)} onDelete={() => removeTask(task.id)} />
-        </div>)}
-        {canAddMain && <button type="button" onClick={() => setDialogMode("create-main")} className="grid min-h-[8rem] place-items-center rounded-xl border-2 border-dashed border-border text-sm text-muted-foreground transition-colors hover:border-primary hover:text-primary"><span className="flex items-center gap-2"><Plus className="h-4 w-4" />Add main task ({mainTasks.length}/2)</span></button>}
-      </div>
-      {!canAddMain && <p className="text-xs text-muted-foreground">Maximum of 2 main tasks reached.</p>}
-    </section>
-    <section className="space-y-3">
-      <div className="flex items-center justify-between"><h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Subtasks ({subtasks.length})</h2></div>
-      <div className="grid gap-3 md:grid-cols-2">
-        {standaloneSubtasks.filter((task) => `${task.title} ${task.description} ${task.notes}`.toLowerCase().includes(query.toLowerCase())).map((task) => <div key={task.id}><TaskCard {...task} onViewDetails={() => setDetailTask(task)} onEdit={() => setEditingTask(task)} onStart={() => startExecution(task.id)} onPause={() => pauseExecution(task.id)} onComplete={() => setCompletionTask(task)} onDelete={() => removeTask(task.id)} /></div>)}
-        {standaloneSubtasks.length === 0 && <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground md:col-span-2">No subtasks yet. Use “Add subtask” above.</div>}
-      </div>
-      {mainTasks.some((task) => subtasksOf(task.id).length > 0) && <div className="space-y-3 pt-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subtasks grouped under main tasks</h3>
-        {mainTasks.map((task) => subtasksOf(task.id).length > 0 && <div key={task.id} className="rounded-xl border border-border/60 bg-card p-3">
-          <p className="mb-2 text-xs font-medium text-muted-foreground">{task.icon} {task.title}</p>
-          <div className="space-y-2">
-            {subtasksOf(task.id).map((sub) => <div key={sub.id} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background px-3 py-1.5 text-xs"><label className="flex flex-1 items-center gap-2 cursor-pointer"><input type="checkbox" checked={sub.status === "done"} onChange={() => setCompletionTask(sub)} className="h-4 w-4 rounded border-border text-primary" /><span className={sub.status === "done" ? "line-through text-muted-foreground" : ""}>{sub.title}</span></label><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setEditingTask(sub)} aria-label="Edit subtask"><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeTask(sub.id)} aria-label="Delete subtask"><Trash2 className="h-5 w-5 text-destructive" /></Button></div>)}
-            <form onSubmit={(event) => addSubtask(event, task.id)} className="flex gap-2"><Input placeholder="Add subtask..." value={subtaskInput[task.id] ?? ""} onChange={(event) => setSubtaskInput((current) => ({ ...current, [task.id]: event.target.value }))} className="h-9 text-xs" /><Button size="sm" type="submit" className="h-9 gap-1 text-xs"><Plus className="h-3.5 w-3.5" />Subtask</Button></form>
+  const handleConfirmSchedule = async () => {
+    if (!schedulingTask || !scheduleDate) return;
+    await scheduleTaskToDate(schedulingTask.id, scheduleDate, "supporting");
+    setSchedulingTask(null);
+    setMessage(`Scheduled task for ${scheduleDate}.`);
+    setTimeout(() => setMessage(""), 3000);
+  };
+
+  return (
+    <div className="min-h-screen p-4 pb-24 sm:p-6 lg:p-8">
+      <div className="mx-auto max-w-6xl space-y-6">
+        {/* Header Bar */}
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Tasks</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Master flat collection of regular tasks. {activeTasks.length} active tasks.
+            </p>
           </div>
-        </div>)}
-      </div>}
-    </section>
-  </div>
-  {dialogMode && (
-    <TaskFormDialog
-      title={dialogMode === "create-main" ? "Create main task" : "Create subtask"}
-      description="Define task definition, scheduling, and optional details."
-      initialValues={taskToFormValues()}
-      submitLabel={dialogMode === "create-main" ? "Save main task" : "Save subtask"}
-      onSubmit={(values) => {
-        const err = handleCreateSubmit(values);
-        if (err) return err;
-        setDialogMode(null);
-      }}
-      onClose={() => setDialogMode(null)}
-    />
-  )}
-  {editingTask && (
-    <TaskFormDialog
-      title="Edit task"
-      description="Update task definition and scheduling."
-      initialValues={taskToFormValues(editingTask)}
-      submitLabel="Save changes"
-      onSubmit={(values) => {
-        handleEditSubmit(values);
-        setEditingTask(null);
-      }}
-      onClose={() => setEditingTask(null)}
-    />
-  )}
-  {completionTask && (
-    <CompletionReviewDialog
-      task={completionTask}
-      sessions={sessions}
-      onClose={() => setCompletionTask(null)}
-      onSubmit={(review) => {
-        recordCompletion(completionTask.id, review);
-        setCompletionTask(null);
-        setSuccessMessage("Task completed and review recorded.");
-      }}
-    />
-  )}
-  </div>;
+
+          <Button onClick={() => setCreating(true)} className="gap-2 shadow-sm">
+            <Plus className="h-4 w-4" />
+            Create Task
+          </Button>
+        </div>
+
+        {/* Message Banner */}
+        {message && (
+          <output className="block rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
+            {message}
+          </output>
+        )}
+
+        {/* Search & Filters */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search tasks by title, outcome, or notes..."
+              className="pl-9"
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+            {["all", "urgent", "high", "medium", "low"].map((p) => (
+              <Badge
+                key={p}
+                variant={priorityFilter === p ? "default" : "outline"}
+                className="cursor-pointer capitalize"
+                onClick={() => setPriorityFilter(p)}
+              >
+                {p}
+              </Badge>
+            ))}
+          </div>
+        </div>
+
+        {/* Tasks Grid */}
+        {filteredTasks.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border p-12 text-center">
+            <p className="text-base font-semibold text-foreground">No tasks found</p>
+            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+              {query || priorityFilter !== "all"
+                ? "Try adjusting your search query or priority filters."
+                : "Your master task collection is empty. Capture your first task to get started."}
+            </p>
+            <Button onClick={() => setCreating(true)} variant="outline" className="mt-4 gap-2">
+              <Plus className="h-4 w-4" />
+              Add Task
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {filteredTasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                onEdit={() => setEditingTask(task)}
+                onDelete={() => setDeletingTask(task)}
+                onSchedule={() => setSchedulingTask(task)}
+                onComplete={() => updateMasterTask(task.id, { status: "done", completedAt: new Date().toISOString() })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Create Task Dialog */}
+      <TaskFormDialog
+        isOpen={creating}
+        onClose={() => setCreating(false)}
+        onSubmit={handleCreateTask}
+      />
+
+      {/* Edit Task Dialog */}
+      <TaskFormDialog
+        isOpen={Boolean(editingTask)}
+        initialTask={editingTask}
+        onClose={() => setEditingTask(null)}
+        onSubmit={handleUpdateTask}
+      />
+
+      {/* Explicit Permanent Deletion Confirmation Modal */}
+      {deletingTask && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+            <h2 className="text-lg font-bold text-foreground">Permanently delete task?</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Are you sure you want to permanently delete <strong className="text-foreground">"{deletingTask.title}"</strong>? This action cannot be recovered.
+            </p>
+            <div className="mt-6 flex justify-end gap-2.5">
+              <Button variant="outline" onClick={() => setDeletingTask(null)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={handleConfirmDelete} className="gap-2">
+                <Trash2 className="h-4 w-4" />
+                Permanently Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Schedule Task Modal */}
+      {schedulingTask && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+            <h2 className="text-lg font-bold text-foreground">Schedule Task</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Assign "{schedulingTask.title}" to a calendar date.
+            </p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground">Target Date</label>
+                <Input
+                  type="date"
+                  value={scheduleDate}
+                  onChange={(e) => setScheduleDate(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button size="sm" variant="outline" onClick={() => setScheduleDate(getTodayDateString())}>
+                  Today
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setScheduleDate(getTomorrowDateString())}>
+                  Tomorrow
+                </Button>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2.5">
+              <Button variant="outline" onClick={() => setSchedulingTask(null)}>
+                Cancel
+              </Button>
+              <Button onClick={handleConfirmSchedule} className="gap-2">
+                <CalendarPlus className="h-4 w-4" />
+                Confirm Schedule
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
