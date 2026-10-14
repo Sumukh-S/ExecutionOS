@@ -1,8 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { repository } from "@/lib/db/repository";
-import { syncEngine } from "@/lib/sync/engine";
+import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/contexts/auth";
 
 export type Priority = "low" | "medium" | "high" | "urgent";
@@ -109,6 +108,8 @@ type ExecutionDataContext = {
   goals: GoalRecord[];
   sessions: FocusSession[];
   quickTasks: QuickTask[];
+  loading: boolean;
+  error: string | null;
   addTask: (task: Omit<TaskRecord, "id" | "createdAt" | "actualDifficulty" | "status"> & { status?: TaskStatus }) => boolean;
   updateTask: (id: string, task: Partial<TaskRecord>) => void;
   recordCompletion: (id: string, review: CompletionReview) => void;
@@ -132,9 +133,6 @@ type ExecutionDataContext = {
 };
 
 const ExecutionDataContext = createContext<ExecutionDataContext | null>(null);
-const STORAGE_KEY = "execution-os-data";
-
-type PersistedState = Pick<ExecutionDataContext, "tasks" | "goals" | "sessions" | "quickTasks">;
 
 function normalizeTask(task: TaskRecord): TaskRecord {
   return {
@@ -152,95 +150,251 @@ function normalizeTask(task: TaskRecord): TaskRecord {
 
 export function ExecutionDataProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const [tasks, setTasks] = useState<TaskRecord[]>(() => getSeedTasks());
-  const [goals, setGoals] = useState<GoalRecord[]>(() => getSeedGoals());
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [goals, setGoals] = useState<GoalRecord[]>([]);
   const [sessions, setSessions] = useState<FocusSession[]>([]);
-  const [quickTasks, setQuickTasks] = useState<QuickTask[]>(() => getSeedQuickTasks());
-  const [hydrated, setHydrated] = useState(false);
+  const [quickTasks, setQuickTasks] = useState<QuickTask[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Initialize from IndexedDB Repository with fallback migration from localStorage
   useEffect(() => {
-    async function initData() {
+    let isMounted = true;
+    async function loadUserData() {
+      if (!user) {
+        if (isMounted) {
+          setTasks([]);
+          setGoals([]);
+          setSessions([]);
+          setQuickTasks([]);
+          setLoading(false);
+        }
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+      const supabase = createClient();
+
       try {
-        if (typeof window !== "undefined") {
-          // Check if Dexie has tasks already
-          const localTasks = await repository.getAllTasks(user?.id);
-          const localGoals = await repository.getAllGoals(user?.id);
-          const localQuick = await repository.getAllQuickTasks(user?.id);
-          const localSessions = await repository.getAllFocusSessions(user?.id);
+        const { data: remoteTasks, error: taskErr } = await supabase
+          .from("tasks")
+          .select("*")
+          .eq("user_id", user.id)
+          .is("deleted_at", null);
+        if (taskErr) throw taskErr;
 
-          if (localTasks.length > 0 || localGoals.length > 0) {
-            setTasks(localTasks.map(normalizeTask));
-            setGoals(localGoals);
-            setQuickTasks(localQuick);
-            setSessions(localSessions);
-          } else {
-            // First time: migrate from localStorage safely if present
-            const stored = window.localStorage.getItem(STORAGE_KEY);
-            if (stored) {
-              const parsed = JSON.parse(stored) as Partial<PersistedState>;
-              const migTasks = Array.isArray(parsed.tasks) ? parsed.tasks.map(normalizeTask) : getSeedTasks();
-              const migGoals = Array.isArray(parsed.goals) ? parsed.goals : getSeedGoals();
-              const migQuick = Array.isArray(parsed.quickTasks) ? parsed.quickTasks : getSeedQuickTasks();
-              const migSessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+        const { data: remoteGoals, error: goalErr } = await supabase
+          .from("goals")
+          .select("*")
+          .eq("user_id", user.id)
+          .is("deleted_at", null);
+        if (goalErr) throw goalErr;
 
-              // Create pre-migration recovery backup in localStorage
-              window.localStorage.setItem("execution-os-backup-pre-migration", stored);
+        const { data: remoteQuick, error: quickErr } = await supabase
+          .from("quick_tasks")
+          .select("*")
+          .eq("user_id", user.id)
+          .is("deleted_at", null);
+        if (quickErr) throw quickErr;
 
-              setTasks(migTasks);
-              setGoals(migGoals);
-              setQuickTasks(migQuick);
-              setSessions(migSessions);
+        const { data: remoteSessions, error: sessionErr } = await supabase
+          .from("focus_sessions")
+          .select("*")
+          .eq("user_id", user.id)
+          .is("deleted_at", null);
+        if (sessionErr) throw sessionErr;
 
-              // Persist into IndexedDB
-              for (const t of migTasks) await repository.saveTask(t, true, user?.id);
-              for (const g of migGoals) await repository.saveGoal(g, true, user?.id);
-              for (const q of migQuick) await repository.saveQuickTask(q, true, user?.id);
-              for (const s of migSessions) await repository.saveFocusSession(s, user?.id);
-            } else {
-              // Seed into IndexedDB
-              const initialTasks = getSeedTasks();
-              const initialGoals = getSeedGoals();
-              const initialQuick = getSeedQuickTasks();
-              setTasks(initialTasks);
-              setGoals(initialGoals);
-              setQuickTasks(initialQuick);
-              for (const t of initialTasks) await repository.saveTask(t, true, user?.id);
-              for (const g of initialGoals) await repository.saveGoal(g, true, user?.id);
-              for (const q of initialQuick) await repository.saveQuickTask(q, true, user?.id);
-            }
-          }
+        if (!isMounted) return;
+
+        if ((!remoteTasks || remoteTasks.length === 0) && (!remoteGoals || remoteGoals.length === 0)) {
+          const initialTasks = getSeedTasks();
+          const initialGoals = getSeedGoals();
+          const initialQuick = getSeedQuickTasks();
+
+          await supabase.from("tasks").upsert(initialTasks.map((t) => ({ ...mapTaskToSupabase(t, user.id) })));
+          await supabase.from("goals").upsert(initialGoals.map((g) => ({ ...mapGoalToSupabase(g, user.id) })));
+          await supabase.from("quick_tasks").upsert(initialQuick.map((q) => ({ ...mapQuickToSupabase(q, user.id) })));
+
+          setTasks(initialTasks);
+          setGoals(initialGoals);
+          setQuickTasks(initialQuick);
+          setSessions([]);
+        } else {
+          setTasks((remoteTasks || []).map((row) => normalizeTask(mapSupabaseToTask(row))));
+          setGoals((remoteGoals || []).map((row) => mapSupabaseToGoal(row)));
+          setQuickTasks((remoteQuick || []).map((row) => mapSupabaseToQuick(row)));
+          setSessions((remoteSessions || []).map((row) => mapSupabaseToSession(row)));
         }
       } catch (err) {
-        console.error("IndexedDB initialization error:", err);
+        if (isMounted) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
-        setHydrated(true);
-        // Automatically trigger sync if user is signed in
-        if (user) {
-          syncEngine.triggerSync(user.id).catch(() => undefined);
+        if (isMounted) {
+          setLoading(false);
         }
       }
     }
 
-    initData();
+    loadUserData();
+    return () => {
+      isMounted = false;
+    };
   }, [user]);
 
-  // Keep backup in localStorage for extra resiliency
-  useEffect(() => {
-    if (!hydrated) return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks, sessions, quickTasks, goals }));
-    } catch {
-      // ignore quota exceeded if any
-    }
-  }, [goals, hydrated, quickTasks, sessions, tasks]);
+  function mapTaskToSupabase(task: TaskRecord, userId: string) {
+    return {
+      id: task.id,
+      user_id: userId,
+      is_main: task.isMain ?? false,
+      parent_id: task.parentId ?? null,
+      title: task.title,
+      icon: task.icon || "✅",
+      list_name: task.listName || "Personal",
+      description: task.description || "",
+      scope: task.scope || "",
+      first_action: task.firstAction || "",
+      outcome: task.outcome || "",
+      priority: task.priority || "medium",
+      predicted_difficulty: task.predictedDifficulty || 7,
+      status: task.status || "todo",
+      scheduled_start: task.scheduledStart || null,
+      scheduled_end: task.scheduledEnd || null,
+      planned_end: task.plannedEnd || null,
+      expected_duration: task.expectedDuration || 30,
+      deadline: task.deadline || null,
+      location: task.location || "",
+      alarm: task.alarm ?? false,
+      wish: task.wish || "",
+      obstacle: task.obstacle || "",
+      notes: task.notes || "",
+      resources: task.resources || "",
+      weekly_goal: task.weeklyGoal || "",
+      monthly_goal: task.monthlyGoal || "",
+      execution_started_at: task.executionStartedAt || null,
+      execution_paused_at: task.executionPausedAt || null,
+      execution_elapsed_ms: task.executionElapsedMs || 0,
+      actual_difficulty: task.actualDifficulty || task.completionReview?.actualDifficulty || null,
+      actual_minutes: task.completionReview?.actualMinutes || null,
+      outcome_achieved: task.completionReview?.outcome || null,
+      reflection: task.completionReview?.reflection || null,
+      completed_at: task.completionReview?.completedAt || null,
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  function mapSupabaseToTask(row: Record<string, unknown>): TaskRecord {
+    return {
+      id: String(row.id),
+      isMain: Boolean(row.is_main),
+      parentId: (row.parent_id as string | null) ?? null,
+      title: String(row.title || ""),
+      icon: String(row.icon || "✅"),
+      listName: String(row.list_name || "Personal"),
+      description: String(row.description || ""),
+      scope: String(row.scope || ""),
+      firstAction: String(row.first_action || ""),
+      priority: (row.priority as TaskRecord["priority"]) || "medium",
+      status: (row.status as TaskRecord["status"]) || "todo",
+      scheduledStart: (row.scheduled_start as string) || "",
+      scheduledEnd: (row.scheduled_end as string) || "",
+      plannedEnd: (row.planned_end as string) || "",
+      expectedDuration: Number(row.expected_duration) || 30,
+      deadline: (row.deadline as string) || "",
+      location: String(row.location || ""),
+      alarm: Boolean(row.alarm),
+      notes: String(row.notes || ""),
+      resources: String(row.resources || ""),
+      predictedDifficulty: Number(row.predicted_difficulty) || 7,
+      actualDifficulty: (row.actual_difficulty as number | null) ?? null,
+      wish: String(row.wish || ""),
+      outcome: String(row.outcome || ""),
+      obstacle: String(row.obstacle || ""),
+      weeklyGoal: String(row.weekly_goal || ""),
+      monthlyGoal: String(row.monthly_goal || ""),
+      createdAt: String(row.created_at || new Date().toISOString()),
+      executionStartedAt: (row.execution_started_at as string | null) ?? null,
+      executionPausedAt: (row.execution_paused_at as string | null) ?? null,
+      executionElapsedMs: Number(row.execution_elapsed_ms) || 0,
+      completionReview: row.completed_at
+        ? {
+            actualDifficulty: Number(row.actual_difficulty) || 7,
+            actualMinutes: Number(row.actual_minutes) || 0,
+            outcome: (row.outcome_achieved as "yes" | "partially" | "no") || "yes",
+            reflection: String(row.reflection || ""),
+            completedAt: String(row.completed_at),
+          }
+        : null,
+    };
+  }
+
+  function mapGoalToSupabase(goal: GoalRecord, userId: string) {
+    return {
+      id: goal.id,
+      user_id: userId,
+      title: goal.title,
+      type: goal.type,
+      target: goal.target,
+      progress: goal.progress,
+      progress_mode: goal.progressMode ?? "numeric",
+      progress_entries: goal.progressEntries ?? [],
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  function mapSupabaseToGoal(row: Record<string, unknown>): GoalRecord {
+    return {
+      id: String(row.id),
+      title: String(row.title || ""),
+      type: (row.type as GoalRecord["type"]) || "weekly",
+      target: String(row.target || ""),
+      progress: Number(row.progress) || 0,
+      progressMode: (row.progress_mode as GoalRecord["progressMode"]) || "numeric",
+      progressEntries: (row.progress_entries as GoalProgressEntry[]) || [],
+      updatedAt: String(row.updated_at || new Date().toISOString()),
+    };
+  }
+
+  function mapQuickToSupabase(quick: QuickTask, userId: string) {
+    return {
+      id: quick.id,
+      user_id: userId,
+      title: quick.title,
+      completed: quick.completed,
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  function mapSupabaseToQuick(row: Record<string, unknown>): QuickTask {
+    return {
+      id: String(row.id),
+      title: String(row.title || ""),
+      completed: Boolean(row.completed),
+      createdAt: String(row.created_at || new Date().toISOString()),
+    };
+  }
+
+  function mapSupabaseToSession(row: Record<string, unknown>): FocusSession {
+    return {
+      id: String(row.id),
+      taskId: String(row.task_id || ""),
+      taskTitle: String(row.task_title || ""),
+      startedAt: String(row.started_at || ""),
+      endedAt: String(row.ended_at || ""),
+      durationMinutes: Number(row.duration_minutes) || 0,
+      status: (row.status as FocusSession["status"]) || "completed",
+    };
+  }
 
   const value = useMemo<ExecutionDataContext>(() => ({
     tasks,
     goals,
     sessions,
     quickTasks,
+    loading,
+    error,
     addTask: (task) => {
+      if (!user) return false;
       if (task.isMain && tasks.filter((item) => item.isMain && item.status !== "done").length >= 2) return false;
       const newTask = normalizeTask({
         ...task,
@@ -255,14 +409,15 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         return [...current, newTask];
       });
 
-      // Write to IndexedDB repository + outbox atomically
-      repository.saveTask(newTask, true, user?.id).then(() => {
-        if (user) syncEngine.triggerSync(user.id);
-      }).catch(console.error);
+      const supabase = createClient();
+      supabase.from("tasks").upsert(mapTaskToSupabase(newTask, user.id)).then(({ error }) => {
+        if (error) console.error("Error adding task to Supabase:", error);
+      });
 
       return true;
     },
     updateTask: (id, patch) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((item) => {
@@ -274,12 +429,14 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error updating task in Supabase:", error);
+        });
       }
     },
     recordCompletion: (id, review) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((item) => {
@@ -296,12 +453,14 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error recording task completion in Supabase:", error);
+        });
       }
     },
     startExecution: (id) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((item) => {
@@ -318,12 +477,14 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error starting execution in Supabase:", error);
+        });
       }
     },
     pauseExecution: (id) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((item) => {
@@ -341,12 +502,14 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error pausing execution in Supabase:", error);
+        });
       }
     },
     resumeExecution: (id) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((item) => {
@@ -363,12 +526,14 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error resuming execution in Supabase:", error);
+        });
       }
     },
     archiveTask: (id) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((item) => {
@@ -380,18 +545,22 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error archiving task in Supabase:", error);
+        });
       }
     },
     deleteTask: (id) => {
+      if (!user) return;
       setTasks((current) => current.filter((task) => task.id !== id));
-      repository.deleteTask(id, user?.id).then(() => {
-        if (user) syncEngine.triggerSync(user.id);
-      }).catch(console.error);
+      const supabase = createClient();
+      supabase.from("tasks").update({ deleted_at: new Date().toISOString() }).eq("id", id).eq("user_id", user.id).then(({ error }) => {
+        if (error) console.error("Error deleting task in Supabase:", error);
+      });
     },
     startTask: (id) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((task) => {
@@ -403,12 +572,14 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error starting task in Supabase:", error);
+        });
       }
     },
     completeTask: (id, actualDifficulty) => {
+      if (!user) return;
       let updatedRecord: TaskRecord | null = null;
       setTasks((current) =>
         current.map((task) => {
@@ -420,22 +591,36 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedRecord) {
-        repository.saveTask(updatedRecord, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("tasks").upsert(mapTaskToSupabase(updatedRecord, user.id)).then(({ error }) => {
+          if (error) console.error("Error completing task in Supabase:", error);
+        });
       }
     },
     addFocusSession: (session) => {
+      if (!user) return;
       const fullSession: FocusSession = {
         ...session,
         id: session.id || `session-${Date.now()}`,
       };
       setSessions((current) => (current.some((item) => item.id === fullSession.id) ? current : [...current, fullSession]));
-      repository.saveFocusSession(fullSession, user?.id).then(() => {
-        if (user) syncEngine.triggerSync(user.id);
-      }).catch(console.error);
+      const supabase = createClient();
+      supabase.from("focus_sessions").upsert({
+        id: fullSession.id,
+        user_id: user.id,
+        task_id: fullSession.taskId || null,
+        task_title: fullSession.taskTitle,
+        started_at: fullSession.startedAt,
+        ended_at: fullSession.endedAt,
+        duration_minutes: fullSession.durationMinutes,
+        status: fullSession.status || "completed",
+        updated_at: new Date().toISOString(),
+      }).then(({ error }) => {
+        if (error) console.error("Error adding focus session in Supabase:", error);
+      });
     },
     addGoal: (goal) => {
+      if (!user) return;
       const newGoal: GoalRecord = {
         ...goal,
         id: `goal-${Date.now()}`,
@@ -443,11 +628,13 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         progressEntries: goal.progressEntries ?? [],
       };
       setGoals((current) => [...current, newGoal]);
-      repository.saveGoal(newGoal, true, user?.id).then(() => {
-        if (user) syncEngine.triggerSync(user.id);
-      }).catch(console.error);
+      const supabase = createClient();
+      supabase.from("goals").upsert(mapGoalToSupabase(newGoal, user.id)).then(({ error }) => {
+        if (error) console.error("Error adding goal in Supabase:", error);
+      });
     },
     updateGoal: (id, patch) => {
+      if (!user) return;
       let updatedGoal: GoalRecord | null = null;
       setGoals((current) =>
         current.map((goal) => {
@@ -459,18 +646,22 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedGoal) {
-        repository.saveGoal(updatedGoal, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("goals").upsert(mapGoalToSupabase(updatedGoal, user.id)).then(({ error }) => {
+          if (error) console.error("Error updating goal in Supabase:", error);
+        });
       }
     },
     deleteGoal: (id) => {
+      if (!user) return;
       setGoals((current) => current.filter((goal) => goal.id !== id));
-      repository.deleteGoal(id, user?.id).then(() => {
-        if (user) syncEngine.triggerSync(user.id);
-      }).catch(console.error);
+      const supabase = createClient();
+      supabase.from("goals").update({ deleted_at: new Date().toISOString() }).eq("id", id).eq("user_id", user.id).then(({ error }) => {
+        if (error) console.error("Error deleting goal in Supabase:", error);
+      });
     },
     updateGoalProgress: (id, progress, note = "") => {
+      if (!user) return;
       let updatedGoal: GoalRecord | null = null;
       setGoals((current) =>
         current.map((goal) => {
@@ -490,39 +681,42 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updatedGoal) {
-        repository.saveGoal(updatedGoal, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("goals").upsert(mapGoalToSupabase(updatedGoal, user.id)).then(({ error }) => {
+          if (error) console.error("Error updating goal progress in Supabase:", error);
+        });
       }
     },
     restoreData: (data, mode) => {
+      if (!user) return;
       const mergeById = <T extends { id: string }>(existing: T[], incoming: T[]) => {
         const map = new Map(existing.map((item) => [item.id, item]));
         incoming.forEach((item) => map.set(item.id, item));
         return [...map.values()];
       };
+      const supabase = createClient();
       if (data.tasks) {
         const targetTasks = mode === "replace" ? data.tasks.map(normalizeTask) : mergeById(tasks, data.tasks.map(normalizeTask));
         setTasks(targetTasks);
-        targetTasks.forEach((t) => repository.saveTask(t, false, user?.id));
+        targetTasks.forEach((t) => supabase.from("tasks").upsert(mapTaskToSupabase(t, user.id)));
       }
       if (data.goals) {
         const targetGoals = mode === "replace" ? data.goals : mergeById(goals, data.goals);
         setGoals(targetGoals);
-        targetGoals.forEach((g) => repository.saveGoal(g, false, user?.id));
+        targetGoals.forEach((g) => supabase.from("goals").upsert(mapGoalToSupabase(g, user.id)));
       }
       if (data.sessions) {
         const targetSessions = mode === "replace" ? data.sessions : mergeById(sessions, data.sessions);
         setSessions(targetSessions);
-        targetSessions.forEach((s) => repository.saveFocusSession(s, user?.id));
       }
       if (data.quickTasks) {
         const targetQuick = mode === "replace" ? data.quickTasks : mergeById(quickTasks, data.quickTasks);
         setQuickTasks(targetQuick);
-        targetQuick.forEach((q) => repository.saveQuickTask(q, false, user?.id));
+        targetQuick.forEach((q) => supabase.from("quick_tasks").upsert(mapQuickToSupabase(q, user.id)));
       }
     },
     addQuickTask: (title) => {
+      if (!user) return;
       const trimmed = title.trim();
       if (!trimmed) return;
       const newQuick: QuickTask = {
@@ -532,11 +726,13 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         createdAt: new Date().toISOString(),
       };
       setQuickTasks((current) => [...current, newQuick]);
-      repository.saveQuickTask(newQuick, true, user?.id).then(() => {
-        if (user) syncEngine.triggerSync(user.id);
-      }).catch(console.error);
+      const supabase = createClient();
+      supabase.from("quick_tasks").upsert(mapQuickToSupabase(newQuick, user.id)).then(({ error }) => {
+        if (error) console.error("Error adding quick task in Supabase:", error);
+      });
     },
     updateQuickTask: (id, title) => {
+      if (!user) return;
       const trimmed = title.trim();
       if (!trimmed) return;
       let updated: QuickTask | null = null;
@@ -550,12 +746,14 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updated) {
-        repository.saveQuickTask(updated, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("quick_tasks").upsert(mapQuickToSupabase(updated, user.id)).then(({ error }) => {
+          if (error) console.error("Error updating quick task in Supabase:", error);
+        });
       }
     },
     toggleQuickTask: (id) => {
+      if (!user) return;
       let updated: QuickTask | null = null;
       setQuickTasks((current) =>
         current.map((item) => {
@@ -567,33 +765,39 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         })
       );
       if (updated) {
-        repository.saveQuickTask(updated, false, user?.id).then(() => {
-          if (user) syncEngine.triggerSync(user.id);
-        }).catch(console.error);
+        const supabase = createClient();
+        supabase.from("quick_tasks").upsert(mapQuickToSupabase(updated, user.id)).then(({ error }) => {
+          if (error) console.error("Error toggling quick task in Supabase:", error);
+        });
       }
     },
     deleteQuickTask: (id) => {
+      if (!user) return;
       setQuickTasks((current) => current.filter((item) => item.id !== id));
-      repository.deleteQuickTask(id, user?.id).then(() => {
-        if (user) syncEngine.triggerSync(user.id);
-      }).catch(console.error);
+      const supabase = createClient();
+      supabase.from("quick_tasks").update({ deleted_at: new Date().toISOString() }).eq("id", id).eq("user_id", user.id).then(({ error }) => {
+        if (error) console.error("Error deleting quick task in Supabase:", error);
+      });
     },
-  }), [goals, quickTasks, sessions, tasks, user]);
+  }), [goals, quickTasks, sessions, tasks, user, loading, error]);
 
   return <ExecutionDataContext.Provider value={value}>{children}</ExecutionDataContext.Provider>;
 }
 
-export function getTaskQuadrant(task: TaskRecord) {
-  const urgent = task.priority === "urgent" || Boolean(task.deadline && new Date(task.deadline).getTime() - Date.now() < 48 * 60 * 60 * 1000);
-  const important = task.priority === "high" || task.priority === "urgent";
-  if (urgent) {
-    return important ? "q1" : "q3";
-  }
-  return important ? "q2" : "q4";
-}
-
 export function useExecutionData() {
   const context = useContext(ExecutionDataContext);
-  if (!context) throw new Error("useExecutionData must be used within ExecutionDataProvider");
+  if (!context) {
+    throw new Error("useExecutionData must be used within an ExecutionDataProvider");
+  }
   return context;
+}
+
+export function getTaskQuadrant(task: TaskRecord): "q1" | "q2" | "q3" | "q4" {
+  const isUrgent = task.priority === "urgent" || task.priority === "high" || (task.deadline ? new Date(task.deadline).getTime() - Date.now() < 48 * 3600 * 1000 : false);
+  const isImportant = task.predictedDifficulty >= 6 || task.priority === "high" || task.priority === "urgent";
+
+  if (isUrgent && isImportant) return "q1";
+  if (!isUrgent && isImportant) return "q2";
+  if (isUrgent && !isImportant) return "q3";
+  return "q4";
 }
