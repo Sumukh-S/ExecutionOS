@@ -150,25 +150,26 @@ export class SyncEngine {
 
     try {
       const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      const activeUserId = userId ?? user?.id;
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-      if (!activeUserId) {
-        // Unauthenticated mode: check if local outbox items are waiting
-        const pending = await repository.getPendingOutbox();
+      if (userError || !user) {
+        // Unauthenticated mode or invalid session token: check if local outbox items are waiting
+        const pending = await repository.getPendingOutbox(userId);
         this.notify(pending.length > 0 ? "pending" : "synced");
         this.isSyncing = false;
         return;
       }
 
-      // Step 1: Push Outbox mutations to Supabase
+      const activeUserId = user.id;
+
+      // Step 1: Push Outbox mutations to Supabase for authenticated user
       await this.pushOutbox(activeUserId);
 
       // Step 2: Pull remote modifications since last cursor
       await this.pullRemoteChanges(activeUserId);
 
       // Check remaining conflicts or pending outbox items
-      const pending = await repository.getPendingOutbox();
+      const pending = await repository.getPendingOutbox(activeUserId);
       const db = getDatabase();
       const unresolvedConflicts = await db.syncConflicts.where("resolved").equals(0).count();
 
@@ -177,7 +178,7 @@ export class SyncEngine {
       } else if (pending.length > 0) {
         this.notify("pending");
       } else {
-        await repository.setMeta("last_sync_time", new Date().toISOString());
+        await repository.setMeta(`last_sync_time_${activeUserId}`, new Date().toISOString());
         this.notify("synced");
       }
     } catch (err) {
@@ -190,15 +191,19 @@ export class SyncEngine {
 
   private async pushOutbox(userId: string): Promise<void> {
     const supabase = createClient();
-    const pending = await repository.getPendingOutbox();
+    const pending = await repository.getPendingOutbox(userId);
     if (!pending.length) return;
 
-    const ids = pending.map((p) => p.id);
+    // Filter out items belonging to another user account
+    const validPending = pending.filter((item) => !item.userId || item.userId === userId);
+    if (!validPending.length) return;
+
+    const ids = validPending.map((p) => p.id);
     await repository.markOutboxSyncing(ids);
 
     const completedIds: string[] = [];
 
-    for (const item of pending) {
+    for (const item of validPending) {
       try {
         await this.processOutboxItem(supabase, item, userId);
         completedIds.push(item.id);

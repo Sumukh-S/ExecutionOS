@@ -56,23 +56,34 @@ const dateAt = (hours: number, minutes: number) => {
   return date.toISOString();
 };
 
-const SEED_TASKS: TaskRecord[] = [
+function generateUUID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+const getSeedTasks = (): TaskRecord[] => [
   {
-    id: "task-hashmap", title: "Solve HashMap Problems", icon: "🧠", listName: "Learning",
+    id: generateUUID(), title: "Solve HashMap Problems", icon: "🧠", listName: "Learning",
     description: "Complete the two-pointer and frequency-map exercises from the DSA set.", scope: "Solve 3 problems, write a short takeaway for each, and commit the notes.", firstAction: "Open the problem set and solve Two Sum without looking at the solution.",
     priority: "high", status: "todo", scheduledStart: dateAt(9, 0), scheduledEnd: dateAt(10, 30), deadline: dateAt(18, 0), location: "Study desk", alarm: true,
     notes: "Focus on the invariant before coding.", resources: "https://leetcode.com/problems/two-sum/", predictedDifficulty: 6, actualDifficulty: null, expectedDuration: 90,
     wish: "I want to feel fluent with the core pattern.", outcome: "Three solved problems and one reusable pattern note.", obstacle: "Getting stuck optimizing before the brute-force version works.", weeklyGoal: "Complete 15 DSA problems", monthlyGoal: "Complete Java + DSA preparation", createdAt: today.toISOString(),
   },
   {
-    id: "task-dsa", title: "Review DSA Patterns", icon: "💻", listName: "Learning",
+    id: generateUUID(), title: "Review DSA Patterns", icon: "💻", listName: "Learning",
     description: "Review the pattern notes and test recall with a timed exercise.", scope: "Review sliding window, two pointers, and hash maps for 60 minutes.", firstAction: "Open the pattern notes and start a 25-minute timer.",
     priority: "medium", status: "todo", scheduledStart: dateAt(14, 0), scheduledEnd: dateAt(15, 0), deadline: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 2, 18).toISOString(), location: "Library", alarm: false,
     notes: "Write down the trigger for each pattern.", resources: "", predictedDifficulty: 7, actualDifficulty: null, expectedDuration: 60,
     wish: "I want to recall the patterns without prompting.", outcome: "A one-page recall sheet and one timed solution.", obstacle: "Passive rereading instead of retrieval.", weeklyGoal: "Complete 15 DSA problems", monthlyGoal: "Complete Java + DSA preparation", createdAt: today.toISOString(),
   },
   {
-    id: "task-gym", title: "Morning Gym Session", icon: "🏋️", listName: "Fitness",
+    id: generateUUID(), title: "Morning Gym Session", icon: "🏋️", listName: "Fitness",
     description: "Strength session focused on lower body and mobility.", scope: "Warm up, complete the three programmed lifts, then stretch.", firstAction: "Pack water and leave by 7:00.",
     priority: "medium", status: "in_progress", scheduledStart: dateAt(7, 0), scheduledEnd: dateAt(8, 0), deadline: "", location: "Community gym", alarm: true,
     notes: "Keep the intensity moderate after poor sleep.", resources: "", predictedDifficulty: 5, actualDifficulty: null, expectedDuration: 60,
@@ -80,17 +91,17 @@ const SEED_TASKS: TaskRecord[] = [
   },
 ];
 
-const SEED_GOALS: GoalRecord[] = [
-  { id: "weekly-dsa", title: "Complete 15 DSA problems", type: "weekly", target: "15 problems", progress: 8 },
-  { id: "weekly-fitness", title: "Train three times", type: "weekly", target: "3 sessions", progress: 1 },
-  { id: "monthly-java", title: "Complete Java + DSA preparation", type: "monthly", target: "20 study sessions", progress: 9 },
-  { id: "longterm-job", title: "Get a software job", type: "longterm", target: "Portfolio ready", progress: 3 },
+const getSeedGoals = (): GoalRecord[] => [
+  { id: generateUUID(), title: "Complete 15 DSA problems", type: "weekly", target: "15 problems", progress: 8 },
+  { id: generateUUID(), title: "Train three times", type: "weekly", target: "3 sessions", progress: 1 },
+  { id: generateUUID(), title: "Complete Java + DSA preparation", type: "monthly", target: "20 study sessions", progress: 9 },
+  { id: generateUUID(), title: "Get a software job", type: "longterm", target: "Portfolio ready", progress: 3 },
 ];
 
-const SEED_QUICK_TASKS: QuickTask[] = [
-  { id: "quick-1", title: "Reply to recruiter email", completed: false, createdAt: today.toISOString() },
-  { id: "quick-2", title: "Drink a glass of water & stretch", completed: false, createdAt: today.toISOString() },
-  { id: "quick-3", title: "Clear desk clutter", completed: false, createdAt: today.toISOString() },
+const getSeedQuickTasks = (): QuickTask[] => [
+  { id: generateUUID(), title: "Reply to recruiter email", completed: false, createdAt: today.toISOString() },
+  { id: generateUUID(), title: "Drink a glass of water & stretch", completed: false, createdAt: today.toISOString() },
+  { id: generateUUID(), title: "Clear desk clutter", completed: false, createdAt: today.toISOString() },
 ];
 
 type ExecutionDataContext = {
@@ -141,10 +152,10 @@ function normalizeTask(task: TaskRecord): TaskRecord {
 
 export function ExecutionDataProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const [tasks, setTasks] = useState<TaskRecord[]>(SEED_TASKS);
-  const [goals, setGoals] = useState<GoalRecord[]>(SEED_GOALS);
+  const [tasks, setTasks] = useState<TaskRecord[]>(() => getSeedTasks());
+  const [goals, setGoals] = useState<GoalRecord[]>(() => getSeedGoals());
   const [sessions, setSessions] = useState<FocusSession[]>([]);
-  const [quickTasks, setQuickTasks] = useState<QuickTask[]>(SEED_QUICK_TASKS);
+  const [quickTasks, setQuickTasks] = useState<QuickTask[]>(() => getSeedQuickTasks());
   const [hydrated, setHydrated] = useState(false);
 
   // Initialize from IndexedDB Repository with fallback migration from localStorage
@@ -168,9 +179,9 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
             const stored = window.localStorage.getItem(STORAGE_KEY);
             if (stored) {
               const parsed = JSON.parse(stored) as Partial<PersistedState>;
-              const migTasks = Array.isArray(parsed.tasks) ? parsed.tasks.map(normalizeTask) : SEED_TASKS;
-              const migGoals = Array.isArray(parsed.goals) ? parsed.goals : SEED_GOALS;
-              const migQuick = Array.isArray(parsed.quickTasks) ? parsed.quickTasks : SEED_QUICK_TASKS;
+              const migTasks = Array.isArray(parsed.tasks) ? parsed.tasks.map(normalizeTask) : getSeedTasks();
+              const migGoals = Array.isArray(parsed.goals) ? parsed.goals : getSeedGoals();
+              const migQuick = Array.isArray(parsed.quickTasks) ? parsed.quickTasks : getSeedQuickTasks();
               const migSessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
 
               // Create pre-migration recovery backup in localStorage
@@ -188,9 +199,15 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
               for (const s of migSessions) await repository.saveFocusSession(s, user?.id);
             } else {
               // Seed into IndexedDB
-              for (const t of SEED_TASKS) await repository.saveTask(t, true, user?.id);
-              for (const g of SEED_GOALS) await repository.saveGoal(g, true, user?.id);
-              for (const q of SEED_QUICK_TASKS) await repository.saveQuickTask(q, true, user?.id);
+              const initialTasks = getSeedTasks();
+              const initialGoals = getSeedGoals();
+              const initialQuick = getSeedQuickTasks();
+              setTasks(initialTasks);
+              setGoals(initialGoals);
+              setQuickTasks(initialQuick);
+              for (const t of initialTasks) await repository.saveTask(t, true, user?.id);
+              for (const g of initialGoals) await repository.saveGoal(g, true, user?.id);
+              for (const q of initialQuick) await repository.saveQuickTask(q, true, user?.id);
             }
           }
         }

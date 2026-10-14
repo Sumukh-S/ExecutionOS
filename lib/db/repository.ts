@@ -310,8 +310,10 @@ export class Repository {
   // ==========================================
   // OUTBOX OPERATIONS
   // ==========================================
-  async getPendingOutbox(): Promise<OutboxItem[]> {
-    return this.db.syncOutbox.where("status").equals("pending").sortBy("createdAt");
+  async getPendingOutbox(userId?: string | null): Promise<OutboxItem[]> {
+    const all = await this.db.syncOutbox.where("status").equals("pending").sortBy("createdAt");
+    if (!userId) return all;
+    return all.filter((item) => !item.userId || item.userId === userId);
   }
 
   async markOutboxSyncing(ids: string[]): Promise<void> {
