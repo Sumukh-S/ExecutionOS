@@ -11,6 +11,7 @@ import {
   Play,
   RotateCcw,
   Sparkles,
+  Repeat,
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
@@ -35,6 +36,7 @@ export function TaskCard({
   onStartFocus,
   onSchedule,
   showFullDetails = false,
+  isRecurring = false,
 }: {
   task: MasterTask;
   onEdit?: () => void;
@@ -43,10 +45,12 @@ export function TaskCard({
   onStartFocus?: () => void;
   onSchedule?: () => void;
   showFullDetails?: boolean;
+  isRecurring?: boolean;
 }) {
   const [expanded, setExpanded] = useState(showFullDetails);
   const countdown = getDeadlineCountdown(task.deadline);
   const priority = priorityConfig[task.priority] || priorityConfig.medium;
+  const hasRecurrence = isRecurring || Boolean(task.recurrenceId);
 
   return (
     <div
@@ -69,6 +73,12 @@ export function TaskCard({
               <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
                 <Clock className="h-3 w-3" />
                 {task.expectedDuration}m
+              </span>
+            )}
+            {hasRecurrence && (
+              <span className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                <Repeat className="h-3 w-3" />
+                Repeating
               </span>
             )}
           </div>

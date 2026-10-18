@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ChevronDown, ChevronUp, Bell, Sparkles, X } from "lucide-react";
-import type { MasterTask, Priority } from "@/types/execution-os";
+import { ChevronDown, ChevronUp, Bell, Sparkles, Repeat, X } from "lucide-react";
+import type { MasterTask, Priority, RecurrenceRule } from "@/types/execution-os";
 import { useExecutionData } from "@/contexts/execution-data";
 import { useNotificationPermission } from "@/lib/notifications";
+import { getTodayDateString } from "@/lib/date-utils";
 
 type TaskFormValues = {
   title: string;
@@ -29,6 +30,15 @@ type TaskFormValues = {
   outcome: string;
   obstacle: string;
   plan: string;
+
+  // Recurrence
+  isRecurring: boolean;
+  frequency: "daily" | "weekly" | "selected_days" | "monthly" | "interval_days";
+  weekdays: number[];
+  monthDay: number | null;
+  intervalDays: number;
+  recurrenceStartDate: string;
+  recurrenceEndDate: string;
 };
 
 export function TaskFormDialog({
@@ -42,12 +52,20 @@ export function TaskFormDialog({
   onClose: () => void;
   initialTask?: MasterTask | null;
   initialDate?: string;
-  onSubmit: (values: Partial<MasterTask>) => void;
+  onSubmit: (
+    values: Partial<MasterTask>,
+    recurrenceRule?: Omit<RecurrenceRule, "id" | "userId" | "createdAt" | "updatedAt"> | null
+  ) => void;
 }) {
-  const { goals } = useExecutionData();
+  const { goals, recurrenceRules } = useExecutionData();
   const { isSupported, isGranted, requestPermission } = useNotificationPermission();
   const [showMentalPrep, setShowMentalPrep] = useState(Boolean(initialTask?.wish || initialTask?.obstacle));
   const [showDetails, setShowDetails] = useState(Boolean(initialTask?.description || initialTask?.notes));
+  const [showRepeat, setShowRepeat] = useState(Boolean(initialTask?.recurrenceId));
+
+  const existingRule = initialTask?.recurrenceId
+    ? recurrenceRules.find((r) => r.id === initialTask.recurrenceId)
+    : null;
 
   const [form, setForm] = useState<TaskFormValues>({
     title: initialTask?.title || "",
@@ -70,6 +88,15 @@ export function TaskFormDialog({
     outcome: initialTask?.outcome || "",
     obstacle: initialTask?.obstacle || "",
     plan: initialTask?.plan || "",
+
+    // Recurrence defaults
+    isRecurring: Boolean(initialTask?.recurrenceId),
+    frequency: existingRule?.frequency || "daily",
+    weekdays: existingRule?.weekdays || [1, 2, 3, 4, 5],
+    monthDay: existingRule?.monthDay || 1,
+    intervalDays: existingRule?.intervalDays || 1,
+    recurrenceStartDate: existingRule?.startDate || initialDate || getTodayDateString(),
+    recurrenceEndDate: existingRule?.endDate || "",
   });
 
   if (!isOpen) return null;
@@ -78,28 +105,43 @@ export function TaskFormDialog({
     e.preventDefault();
     if (!form.title.trim()) return;
 
-    onSubmit({
-      title: form.title.trim(),
-      expectedOutcome: form.expectedOutcome.trim(),
-      firstAction: form.firstAction.trim(),
-      priority: form.priority,
-      predictedDifficulty: Number(form.predictedDifficulty),
-      expectedDuration: Number(form.expectedDuration),
-      scheduledDate: form.scheduledDate || null,
-      scheduledTime: form.scheduledTime || null,
-      deadline: form.deadline ? new Date(form.deadline).toISOString() : null,
-      hasAlarm: form.hasAlarm,
-      alarmTime: form.alarmTime ? new Date(form.alarmTime).toISOString() : null,
-      alarmSetConfirmed: form.alarmSetConfirmed,
-      description: form.description.trim(),
-      notes: form.notes.trim(),
-      goalId: form.goalId || null,
-      progress: Number(form.progress),
-      wish: form.wish.trim(),
-      outcome: form.outcome.trim(),
-      obstacle: form.obstacle.trim(),
-      plan: form.plan.trim(),
-    });
+    const recurrencePayload = form.isRecurring
+      ? {
+          frequency: form.frequency,
+          weekdays: form.frequency === "selected_days" ? form.weekdays : [],
+          monthDay: form.frequency === "monthly" ? Number(form.monthDay) || 1 : null,
+          intervalDays: form.frequency === "interval_days" ? Number(form.intervalDays) || 1 : 1,
+          startDate: form.recurrenceStartDate || form.scheduledDate || getTodayDateString(),
+          endDate: form.recurrenceEndDate || null,
+          isActive: true,
+        }
+      : null;
+
+    onSubmit(
+      {
+        title: form.title.trim(),
+        expectedOutcome: form.expectedOutcome.trim(),
+        firstAction: form.firstAction.trim(),
+        priority: form.priority,
+        predictedDifficulty: Number(form.predictedDifficulty),
+        expectedDuration: Number(form.expectedDuration),
+        scheduledDate: form.scheduledDate || null,
+        scheduledTime: form.scheduledTime || null,
+        deadline: form.deadline ? new Date(form.deadline).toISOString() : null,
+        hasAlarm: form.hasAlarm,
+        alarmTime: form.alarmTime ? new Date(form.alarmTime).toISOString() : null,
+        alarmSetConfirmed: form.alarmSetConfirmed,
+        description: form.description.trim(),
+        notes: form.notes.trim(),
+        goalId: form.goalId || null,
+        progress: Number(form.progress),
+        wish: form.wish.trim(),
+        outcome: form.outcome.trim(),
+        obstacle: form.obstacle.trim(),
+        plan: form.plan.trim(),
+      },
+      recurrencePayload
+    );
     onClose();
   };
 
@@ -253,6 +295,149 @@ export function TaskFormDialog({
             >
               {form.hasAlarm ? "Alarm Enabled" : "Enable Alarm"}
             </Button>
+          </div>
+
+          {/* Repeat / Recurrence Accordion */}
+          <div className="rounded-lg border border-border">
+            <button
+              type="button"
+              onClick={() => setShowRepeat((v) => !v)}
+              className="flex w-full items-center justify-between p-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:bg-accent/40"
+            >
+              <span className="flex items-center gap-2">
+                <Repeat className="h-3.5 w-3.5 text-primary" />
+                {form.isRecurring ? `Repeating (${form.frequency})` : "Does Not Repeat"}
+              </span>
+              {showRepeat ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+
+            {showRepeat && (
+              <div className="space-y-3 border-t border-border p-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-foreground">Enable Recurrence</label>
+                  <Button
+                    type="button"
+                    variant={form.isRecurring ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setForm((prev) => ({ ...prev, isRecurring: !prev.isRecurring }))}
+                  >
+                    {form.isRecurring ? "Repeat Enabled" : "Does Not Repeat"}
+                  </Button>
+                </div>
+
+                {form.isRecurring && (
+                  <div className="space-y-3 pt-2">
+                    <div>
+                      <label className="text-xs text-muted-foreground">Recurrence Rule</label>
+                      <select
+                        value={form.frequency}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            frequency: e.target.value as TaskFormValues["frequency"],
+                          })
+                        }
+                        className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="daily">Every day</option>
+                        <option value="weekly">Every week</option>
+                        <option value="selected_days">Selected weekdays</option>
+                        <option value="monthly">Every month</option>
+                        <option value="interval_days">Every X days</option>
+                      </select>
+                    </div>
+
+                    {form.frequency === "selected_days" && (
+                      <div>
+                        <label className="text-xs text-muted-foreground">Select Days of Week</label>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {[
+                            { day: 1, label: "Mon" },
+                            { day: 2, label: "Tue" },
+                            { day: 3, label: "Wed" },
+                            { day: 4, label: "Thu" },
+                            { day: 5, label: "Fri" },
+                            { day: 6, label: "Sat" },
+                            { day: 0, label: "Sun" },
+                          ].map(({ day, label }) => {
+                            const selected = form.weekdays.includes(day);
+                            return (
+                              <button
+                                key={day}
+                                type="button"
+                                onClick={() => {
+                                  const next = selected
+                                    ? form.weekdays.filter((d) => d !== day)
+                                    : [...form.weekdays, day];
+                                  setForm({ ...form, weekdays: next });
+                                }}
+                                className={`rounded-lg border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                                  selected
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border bg-background text-muted-foreground hover:bg-accent"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {form.frequency === "interval_days" && (
+                      <div>
+                        <label className="text-xs text-muted-foreground">Interval in Days</label>
+                        <Input
+                          type="number"
+                          min="1"
+                          max="365"
+                          value={form.intervalDays}
+                          onChange={(e) => setForm({ ...form, intervalDays: Number(e.target.value) || 1 })}
+                          className="mt-1 text-sm"
+                        />
+                      </div>
+                    )}
+
+                    {form.frequency === "monthly" && (
+                      <div>
+                        <label className="text-xs text-muted-foreground">Day of Month (1–31)</label>
+                        <Input
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={form.monthDay || 1}
+                          onChange={(e) => setForm({ ...form, monthDay: Number(e.target.value) || 1 })}
+                          className="mt-1 text-sm"
+                        />
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 pt-1">
+                      <div>
+                        <label className="text-xs text-muted-foreground">Recurrence Start Date</label>
+                        <Input
+                          type="date"
+                          value={form.recurrenceStartDate}
+                          onChange={(e) => setForm({ ...form, recurrenceStartDate: e.target.value })}
+                          className="mt-1 text-sm"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-xs text-muted-foreground">Optional End Date (or blank for indefinite)</label>
+                        <Input
+                          type="date"
+                          value={form.recurrenceEndDate}
+                          onChange={(e) => setForm({ ...form, recurrenceEndDate: e.target.value })}
+                          className="mt-1 text-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Goal Association */}

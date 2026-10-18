@@ -95,7 +95,10 @@ export function doesRecurrenceMatchDate(rule: RecurrenceRule, dateString: string
     case "monthly": {
       const targetDayOfMonth = targetDate.getDate();
       const ruleDay = rule.monthDay ?? startDate.getDate();
-      return targetDayOfMonth === ruleDay;
+      // Safe month-end handling (e.g. if rule is on the 31st, but February only has 28 or 29 days)
+      const lastDayOfTargetMonth = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0).getDate();
+      const effectiveRuleDay = Math.min(ruleDay, lastDayOfTargetMonth);
+      return targetDayOfMonth === effectiveRuleDay;
     }
 
     case "interval_days": {
@@ -109,3 +112,34 @@ export function doesRecurrenceMatchDate(rule: RecurrenceRule, dateString: string
       return false;
   }
 }
+
+/**
+ * Generates matching occurrence dates for a recurrence rule within a rolling window.
+ * Default window is 60 days from today (or from rule.startDate if future).
+ */
+export function generateUpcomingOccurrenceDates(
+  rule: RecurrenceRule,
+  startDateStr: string = getTodayDateString(),
+  horizonDays: number = 60,
+  limitCount?: number
+): string[] {
+  if (!rule.isActive) return [];
+
+  const dates: string[] = [];
+  const effectiveStart = startDateStr < rule.startDate ? rule.startDate : startDateStr;
+  let cursor = effectiveStart;
+
+  for (let i = 0; i <= horizonDays; i++) {
+    if (rule.endDate && cursor > rule.endDate) break;
+    if (limitCount && dates.length >= limitCount) break;
+
+    if (doesRecurrenceMatchDate(rule, cursor)) {
+      dates.push(cursor);
+    }
+
+    cursor = addDaysToDate(cursor, 1);
+  }
+
+  return dates;
+}
+

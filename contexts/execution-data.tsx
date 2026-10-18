@@ -3,11 +3,12 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/contexts/auth";
-import { getTodayDateString } from "@/lib/date-utils";
+import { getTodayDateString, generateUpcomingOccurrenceDates } from "@/lib/date-utils";
 import type {
   MasterTask,
   TaskOccurrence,
   FiveMinuteTask,
+  RecurrenceRule,
   CalendarEvent,
   FocusSession,
   PersonalObservation,
@@ -21,6 +22,7 @@ import type {
 type ExecutionDataContext = {
   masterTasks: MasterTask[];
   occurrences: TaskOccurrence[];
+  recurrenceRules: RecurrenceRule[];
   fiveMinuteTasks: FiveMinuteTask[];
   events: CalendarEvent[];
   focusSessions: FocusSession[];
@@ -32,9 +34,21 @@ type ExecutionDataContext = {
   loading: boolean;
   error: string | null;
 
-  createMasterTask: (payload: Partial<MasterTask>) => Promise<MasterTask | null>;
-  updateMasterTask: (id: string, payload: Partial<MasterTask>) => Promise<void>;
-  deleteMasterTask: (id: string) => Promise<void>;
+  createMasterTask: (
+    payload: Partial<MasterTask>,
+    recurrenceRule?: Omit<RecurrenceRule, "id" | "userId" | "createdAt" | "updatedAt"> | null
+  ) => Promise<MasterTask | null>;
+  updateMasterTask: (
+    id: string,
+    payload: Partial<MasterTask>,
+    mode?: "single" | "future" | "series",
+    targetOccurrenceDate?: string
+  ) => Promise<void>;
+  deleteMasterTask: (
+    id: string,
+    mode?: "single" | "future" | "series",
+    targetOccurrenceDate?: string
+  ) => Promise<void>;
 
   scheduleTaskToDate: (taskId: string, date: string, section?: DailySection) => Promise<void>;
   updateOccurrence: (occurrenceId: string, payload: Partial<TaskOccurrence>) => Promise<void>;
@@ -76,6 +90,7 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const [masterTasks, setMasterTasks] = useState<MasterTask[]>([]);
   const [occurrences, setOccurrences] = useState<TaskOccurrence[]>([]);
+  const [recurrenceRules, setRecurrenceRules] = useState<RecurrenceRule[]>([]);
   const [fiveMinuteTasks, setFiveMinuteTasks] = useState<FiveMinuteTask[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [focusSessions, setFocusSessions] = useState<FocusSession[]>([]);
@@ -115,6 +130,7 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         const [
           { data: tasksData },
           { data: occData },
+          { data: rulesData },
           { data: fiveMinData },
           { data: eventsData },
           { data: focusData },
@@ -126,6 +142,7 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         ] = await Promise.all([
           supabase.from("tasks").select("*").eq("user_id", user.id).is("deleted_at", null),
           supabase.from("task_occurrences").select("*").eq("user_id", user.id),
+          supabase.from("recurrence_rules").select("*").eq("user_id", user.id),
           supabase.from("five_minute_tasks").select("*").eq("user_id", user.id),
           supabase.from("calendar_events").select("*").eq("user_id", user.id),
           supabase.from("focus_sessions").select("*").eq("user_id", user.id),
@@ -137,6 +154,20 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         ]);
 
         if (!isMounted) return;
+
+        const mappedRules: RecurrenceRule[] = (rulesData || []).map((r) => ({
+          id: r.id,
+          userId: r.user_id,
+          frequency: r.frequency,
+          weekdays: r.weekdays || [],
+          monthDay: r.month_day,
+          intervalDays: r.interval_days || 1,
+          startDate: r.start_date,
+          endDate: r.end_date,
+          isActive: r.is_active,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        }));
 
         const mappedTasks: MasterTask[] = (tasksData || []).map((t) => ({
           id: t.id,
@@ -317,6 +348,7 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
 
         setMasterTasks(mappedTasks);
         setOccurrences(mappedOcc);
+        setRecurrenceRules(mappedRules);
         setFiveMinuteTasks(mappedFiveMin);
         setEvents(mappedEvents);
         setFocusSessions(mappedFocus);
@@ -341,6 +373,7 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ExecutionDataContext>(() => ({
     masterTasks,
     occurrences,
+    recurrenceRules,
     fiveMinuteTasks,
     events,
     focusSessions,
@@ -352,9 +385,49 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
     loading,
     error,
 
-    createMasterTask: async (payload) => {
+    createMasterTask: async (payload, recurrenceRule) => {
       if (!user) return null;
       const supabase = createClient();
+
+      let createdRecurrenceId: string | null = null;
+      let newRecurrenceObj: RecurrenceRule | null = null;
+
+      if (recurrenceRule) {
+        const ruleInsert = {
+          user_id: user.id,
+          frequency: recurrenceRule.frequency,
+          weekdays: recurrenceRule.weekdays || [],
+          month_day: recurrenceRule.monthDay || null,
+          interval_days: recurrenceRule.intervalDays || 1,
+          start_date: recurrenceRule.startDate,
+          end_date: recurrenceRule.endDate || null,
+          is_active: recurrenceRule.isActive ?? true,
+        };
+        const { data: ruleData, error: ruleErr } = await supabase
+          .from("recurrence_rules")
+          .insert(ruleInsert)
+          .select()
+          .single();
+
+        if (!ruleErr && ruleData) {
+          createdRecurrenceId = ruleData.id;
+          newRecurrenceObj = {
+            id: ruleData.id,
+            userId: ruleData.user_id,
+            frequency: ruleData.frequency,
+            weekdays: ruleData.weekdays || [],
+            monthDay: ruleData.month_day,
+            intervalDays: ruleData.interval_days || 1,
+            startDate: ruleData.start_date,
+            endDate: ruleData.end_date,
+            isActive: ruleData.is_active,
+            createdAt: ruleData.created_at,
+            updatedAt: ruleData.updated_at,
+          };
+          setRecurrenceRules((prev) => [newRecurrenceObj!, ...prev]);
+        }
+      }
+
       const insertObj = {
         user_id: user.id,
         title: payload.title || "Untitled Task",
@@ -378,6 +451,7 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
         obstacle: payload.obstacle || "",
         plan: payload.plan || "",
         status: payload.status || "todo",
+        recurrence_id: createdRecurrenceId || payload.recurrenceId || null,
       };
 
       const { data, error } = await supabase.from("tasks").insert(insertObj).select().single();
@@ -419,15 +493,66 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
 
       setMasterTasks((prev) => [newTask, ...prev]);
 
-      if (newTask.scheduledDate) {
+      // If this is a recurring task, generate the rolling 60-day occurrences
+      if (newRecurrenceObj) {
+        const dates = generateUpcomingOccurrenceDates(newRecurrenceObj, getTodayDateString(), 60);
+        if (dates.length > 0) {
+          const occInserts = dates.map((date) => ({
+            user_id: user.id,
+            task_id: newTask.id,
+            scheduled_date: date,
+            daily_section: "supporting",
+            status: "todo",
+          }));
+
+          const { data: generatedOccs } = await supabase
+            .from("task_occurrences")
+            .upsert(occInserts, { onConflict: "user_id,task_id,scheduled_date" })
+            .select();
+
+          if (generatedOccs && generatedOccs.length > 0) {
+            const mappedGenerated: TaskOccurrence[] = generatedOccs.map((o) => ({
+              id: o.id,
+              userId: o.user_id,
+              taskId: o.task_id,
+              scheduledDate: o.scheduled_date,
+              dailySection: o.daily_section,
+              dailySortOrder: o.daily_sort_order,
+              status: o.status,
+              progress: o.progress,
+              actualDifficulty: o.actual_difficulty,
+              actualMinutes: o.actual_minutes,
+              completedAt: o.completed_at,
+              completionNotes: o.completion_notes,
+              nextActionScheduledFor: o.next_action_scheduled_for,
+              createdAt: o.created_at,
+              updatedAt: o.updated_at,
+            }));
+
+            setOccurrences((prev) => {
+              const existingIds = new Set(prev.map((p) => p.id));
+              const fresh = mappedGenerated.filter((m) => !existingIds.has(m.id));
+              return [...prev, ...fresh];
+            });
+          }
+        }
+      } else if (newTask.scheduledDate) {
+        // Non-recurring scheduled task occurrence
         await supabase.from("task_occurrences").upsert({
           user_id: user.id,
           task_id: newTask.id,
           scheduled_date: newTask.scheduledDate,
           daily_section: "supporting",
           status: "todo",
-        });
-        const { data: occData } = await supabase.from("task_occurrences").select("*").eq("task_id", newTask.id).eq("scheduled_date", newTask.scheduledDate).single();
+        }, { onConflict: "user_id,task_id,scheduled_date" });
+
+        const { data: occData } = await supabase
+          .from("task_occurrences")
+          .select("*")
+          .eq("task_id", newTask.id)
+          .eq("scheduled_date", newTask.scheduledDate)
+          .single();
+
         if (occData) {
           setOccurrences((prev) => [...prev, {
             id: occData.id,
@@ -452,9 +577,54 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
       return newTask;
     },
 
-    updateMasterTask: async (id, payload) => {
+    updateMasterTask: async (id, payload, mode = "series", targetOccurrenceDate) => {
       if (!user) return;
       const supabase = createClient();
+
+      if (mode === "single" && targetOccurrenceDate) {
+        // Update only this specific occurrence
+        const targetOcc = occurrences.find((o) => o.taskId === id && o.scheduledDate === targetOccurrenceDate);
+        if (targetOcc) {
+          // If task attributes like title/priority changed, create an independent detached task
+          const original = masterTasks.find((t) => t.id === id);
+          if (original) {
+            const { data: standaloneTask } = await supabase.from("tasks").insert({
+              user_id: user.id,
+              title: payload.title || original.title,
+              expected_outcome: payload.expectedOutcome ?? original.expectedOutcome,
+              first_action: payload.firstAction ?? original.firstAction,
+              priority: payload.priority ?? original.priority,
+              predicted_difficulty: payload.predictedDifficulty ?? original.predictedDifficulty,
+              expected_duration: payload.expectedDuration ?? original.expectedDuration,
+              scheduled_date: targetOccurrenceDate,
+              scheduled_time: payload.scheduledTime ?? original.scheduledTime,
+              deadline: payload.deadline ?? original.deadline,
+              description: payload.description ?? original.description,
+              notes: payload.notes ?? original.notes,
+              goal_id: payload.goalId ?? original.goalId,
+              status: payload.status ?? targetOcc.status,
+            }).select().single();
+
+            if (standaloneTask) {
+              await supabase.from("task_occurrences").update({ task_id: standaloneTask.id }).eq("id", targetOcc.id);
+              setOccurrences((prev) => prev.map((o) => (o.id === targetOcc.id ? { ...o, taskId: standaloneTask.id } : o)));
+              setMasterTasks((prev) => [standaloneTask, ...prev]);
+              return;
+            }
+          }
+        }
+      } else if (mode === "future" && targetOccurrenceDate) {
+        // End the current recurrence rule before targetOccurrenceDate
+        const task = masterTasks.find((t) => t.id === id);
+        if (task?.recurrenceId) {
+          await supabase.from("recurrence_rules").update({ end_date: targetOccurrenceDate, is_active: false }).eq("id", task.recurrenceId);
+          // Delete uncompleted occurrences on or after targetOccurrenceDate
+          await supabase.from("task_occurrences").delete().eq("task_id", id).gte("scheduled_date", targetOccurrenceDate).neq("status", "done");
+          setOccurrences((prev) => prev.filter((o) => !(o.taskId === id && o.scheduledDate >= targetOccurrenceDate && o.status !== "done")));
+        }
+      }
+
+      // Default series update
       const updateObj: Record<string, unknown> = {};
       if (payload.title !== undefined) updateObj.title = payload.title;
       if (payload.expectedOutcome !== undefined) updateObj.expected_outcome = payload.expectedOutcome;
@@ -484,9 +654,34 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
       setMasterTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...payload, updatedAt: new Date().toISOString() } : t)));
     },
 
-    deleteMasterTask: async (id) => {
+    deleteMasterTask: async (id, mode = "series", targetOccurrenceDate) => {
       if (!user) return;
       const supabase = createClient();
+
+      if (mode === "single" && targetOccurrenceDate) {
+        // Delete only the single occurrence for target date
+        await supabase.from("task_occurrences").delete().eq("task_id", id).eq("scheduled_date", targetOccurrenceDate);
+        setOccurrences((prev) => prev.filter((o) => !(o.taskId === id && o.scheduledDate === targetOccurrenceDate)));
+        return;
+      }
+
+      if (mode === "future" && targetOccurrenceDate) {
+        // Delete occurrences from target date onward while preserving past/completed
+        const task = masterTasks.find((t) => t.id === id);
+        if (task?.recurrenceId) {
+          await supabase.from("recurrence_rules").update({ end_date: targetOccurrenceDate, is_active: false }).eq("id", task.recurrenceId);
+        }
+        await supabase.from("task_occurrences").delete().eq("task_id", id).gte("scheduled_date", targetOccurrenceDate);
+        setOccurrences((prev) => prev.filter((o) => !(o.taskId === id && o.scheduledDate >= targetOccurrenceDate)));
+        return;
+      }
+
+      // Entire series deletion
+      const task = masterTasks.find((t) => t.id === id);
+      if (task?.recurrenceId) {
+        await supabase.from("recurrence_rules").delete().eq("id", task.recurrenceId);
+        setRecurrenceRules((prev) => prev.filter((r) => r.id !== task.recurrenceId));
+      }
       await supabase.from("tasks").update({ deleted_at: new Date().toISOString() }).eq("id", id).eq("user_id", user.id);
       setMasterTasks((prev) => prev.filter((t) => t.id !== id));
       setOccurrences((prev) => prev.filter((o) => o.taskId !== id));
@@ -986,7 +1181,7 @@ export function ExecutionDataProvider({ children }: { children: ReactNode }) {
 
       setPreferences((prev) => (prev ? { ...prev, ...payload } : null));
     },
-  }), [masterTasks, occurrences, fiveMinuteTasks, events, focusSessions, goals, standards, observations, journalEntries, preferences, loading, error, user]);
+  }), [masterTasks, occurrences, recurrenceRules, fiveMinuteTasks, events, focusSessions, goals, standards, observations, journalEntries, preferences, loading, error, user]);
 
   return <ExecutionDataContext.Provider value={value}>{children}</ExecutionDataContext.Provider>;
 }

@@ -97,8 +97,11 @@ export default function TodayPage() {
     return masterTasks.filter((t) => !scheduledTaskIds.has(t.id) && t.status !== "done" && !t.deletedAt);
   }, [masterTasks, todayOccurrences]);
 
-  const handleCreateTask = async (payload: Partial<MasterTask>) => {
-    await createMasterTask({ ...payload, scheduledDate: todayStr });
+  const handleCreateTask = async (
+    payload: Partial<MasterTask>,
+    recurrenceRule?: Omit<import("@/types/execution-os").RecurrenceRule, "id" | "userId" | "createdAt" | "updatedAt"> | null
+  ) => {
+    await createMasterTask({ ...payload, scheduledDate: todayStr }, recurrenceRule);
   };
 
   const handleAddFiveMin = async (e: React.FormEvent) => {

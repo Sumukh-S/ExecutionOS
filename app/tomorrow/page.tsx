@@ -88,8 +88,11 @@ export default function TomorrowPage() {
     );
   }, [occurrenceTaskMap]);
 
-  const handleCreateTask = async (payload: Partial<MasterTask>) => {
-    await createMasterTask({ ...payload, scheduledDate: tomorrowStr });
+  const handleCreateTask = async (
+    payload: Partial<MasterTask>,
+    recurrenceRule?: Omit<import("@/types/execution-os").RecurrenceRule, "id" | "userId" | "createdAt" | "updatedAt"> | null
+  ) => {
+    await createMasterTask({ ...payload, scheduledDate: tomorrowStr }, recurrenceRule);
   };
 
   const handleAddFiveMin = async (e: React.FormEvent) => {

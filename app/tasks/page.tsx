@@ -49,9 +49,12 @@ export default function TasksPage() {
     });
   }, [activeTasks, query, priorityFilter]);
 
-  const handleCreateTask = async (payload: Partial<MasterTask>) => {
-    await createMasterTask(payload);
-    setMessage("Task created successfully.");
+  const handleCreateTask = async (
+    payload: Partial<MasterTask>,
+    recurrenceRule?: Omit<import("@/types/execution-os").RecurrenceRule, "id" | "userId" | "createdAt" | "updatedAt"> | null
+  ) => {
+    await createMasterTask(payload, recurrenceRule);
+    setMessage(recurrenceRule ? "Recurring task created and upcoming occurrences scheduled." : "Task created successfully.");
     setTimeout(() => setMessage(""), 3000);
   };
 
